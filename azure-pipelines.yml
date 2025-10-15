@@ -1,0 +1,141 @@
+# Azure DevOps Pipeline für Variant Configurator
+# Baut und deployed Frontend (React) und Backend (FastAPI)
+
+trigger:
+  branches:
+    include:
+      - master
+      - main
+
+# Variables - Diese müssen vom IT-Team konfiguriert werden
+variables:
+  # Container Registry (wird vom IT-Team bereitgestellt)
+  containerRegistry: 'YOUR_ACR_NAME.azurecr.io'
+  dockerRegistryServiceConnection: 'YOUR_SERVICE_CONNECTION_NAME'
+  
+  # Image Details
+  backendImageRepository: 'variant-configurator-backend'
+  backendTag: '$(Build.BuildId)'
+  
+  # Build Agent
+  vmImageName: 'ubuntu-latest'
+
+stages:
+  # ============================================================
+  # STAGE 1: Frontend bauen
+  # ============================================================
+  - stage: BuildFrontend
+    displayName: 'Build Frontend (React + Vite)'
+    jobs:
+      - job: BuildReact
+        displayName: 'Build React Application'
+        pool:
+          vmImage: $(vmImageName)
+        steps:
+          - task: NodeTool@0
+            displayName: 'Install Node.js'
+            inputs:
+              versionSpec: '18.x'
+          
+          - script: |
+              cd App
+              npm install
+              npm run build
+            displayName: 'npm install and build'
+          
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Frontend Artifact'
+            inputs:
+              PathtoPublish: 'App/dist'
+              ArtifactName: 'frontend-dist'
+              publishLocation: 'Container'
+
+  # ============================================================
+  # STAGE 2: Backend Docker Image bauen
+  # ============================================================
+  - stage: BuildBackend
+    displayName: 'Build Backend Docker Image'
+    dependsOn: []  # Läuft parallel zu Frontend
+    jobs:
+      - job: BuildDocker
+        displayName: 'Build and Push Docker Image'
+        pool:
+          vmImage: $(vmImageName)
+        steps:
+          - task: Docker@2
+            displayName: 'Build Backend Docker Image'
+            inputs:
+              command: build
+              repository: $(backendImageRepository)
+              dockerfile: 'database/Dockerfile'
+              containerRegistry: $(dockerRegistryServiceConnection)
+              tags: |
+                $(backendTag)
+                latest
+          
+          - task: Docker@2
+            displayName: 'Push Backend Docker Image to Registry'
+            inputs:
+              command: push
+              repository: $(backendImageRepository)
+              containerRegistry: $(dockerRegistryServiceConnection)
+              tags: |
+                $(backendTag)
+                latest
+
+  # ============================================================
+  # STAGE 3: Deployment (vom IT-Team zu konfigurieren)
+  # ============================================================
+  - stage: Deploy
+    displayName: 'Deploy to Production'
+    dependsOn:
+      - BuildFrontend
+      - BuildBackend
+    condition: succeeded()
+    jobs:
+      # Backend Deployment
+      - deployment: DeployBackend
+        displayName: 'Deploy Backend Container'
+        pool:
+          vmImage: $(vmImageName)
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - script: |
+                    echo "Backend Deployment wird hier vom IT-Team konfiguriert"
+                    echo "Image: $(containerRegistry)/$(backendImageRepository):$(backendTag)"
+                  displayName: 'Backend Deploy Placeholder'
+                
+                # Beispiel für Azure Container Apps (vom IT-Team anzupassen)
+                # - task: AzureContainerApps@1
+                #   inputs:
+                #     azureSubscription: 'YOUR_SUBSCRIPTION'
+                #     containerAppName: 'variant-backend'
+                #     resourceGroup: 'YOUR_RG'
+                #     imageToDeploy: '$(containerRegistry)/$(backendImageRepository):$(backendTag)'
+      
+      # Frontend Deployment
+      - deployment: DeployFrontend
+        displayName: 'Deploy Frontend Static Files'
+        pool:
+          vmImage: $(vmImageName)
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: 'frontend-dist'
+                
+                - script: |
+                    echo "Frontend Deployment wird hier vom IT-Team konfiguriert"
+                    echo "Artifact verfügbar in: $(Pipeline.Workspace)/frontend-dist"
+                  displayName: 'Frontend Deploy Placeholder'
+                
+                # Beispiel für Azure Static Web Apps (vom IT-Team anzupassen)
+                # - task: AzureStaticWebApp@0
+                #   inputs:
+                #     app_location: '$(Pipeline.Workspace)/frontend-dist'
+                #     azure_static_web_apps_api_token: '$(STATIC_WEB_APP_TOKEN)'
