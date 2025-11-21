@@ -1,0 +1,447 @@
+{
+  "children": [
+    {
+      "children": [
+        {
+          "children": [
+            {
+              "children": [
+                {
+                  "children": [
+                    {
+                      "children": [],
+                      "code": "ABC",
+                      "name": "",
+                      "label": "",
+                      "label-en": "",
+                      "position": 8,
+                      "full_typecode": "A 1234-ABC",
+                      "group": ""
+                    }
+                  ],
+                  "pattern": 3,
+                  "position": 8,
+                  "name": ""
+                }
+              ],
+              "code": "1234",
+              "name": "",
+              "label": "0-4: Numerische Codierung\nGruppe 1, Position 1-N",
+              "label-en": "",
+              "position": 3,
+              "is_intermediate_code": false,
+              "pictures": [
+                {
+                  "url": "/uploads/a.png",
+                  "description": "Übersicht numerische Codes Gruppe 1"
+                }
+              ],
+              "links": []
+            }
+          ],
+          "pattern": 4,
+          "position": 3,
+          "name": ""
+        },
+        {
+          "children": [
+            {
+              "children": [
+                {
+                  "children": [
+                    {
+                      "children": [],
+                      "code": "DEF",
+                      "name": "",
+                      "label": "EFEFEF: Motor 313kW\nDrehzahl: 1500 rpm",
+                      "label-en": "",
+                      "position": 9,
+                      "full_typecode": "A 45,67-DEF",
+                      "group": "",
+                      "pictures": [
+                        {
+                          "url": "/uploads/a.png",
+                          "description": "Technisches Datenblatt Motor 313kW"
+                        }
+                      ],
+                      "links": []
+                    }
+                  ],
+                  "pattern": 3,
+                  "position": 9,
+                  "name": ""
+                }
+              ],
+              "code": "45,67",
+              "name": "",
+              "label": "454545: Elektrischer Antrieb\nStandard-Variante ohne Bilder\n\n0-4: Numerische Codierung\nGruppe 1, Position 1-N",
+              "label-en": "",
+              "position": 3,
+              "is_intermediate_code": false,
+              "pictures": [
+                {
+                  "url": "/uploads/a.png",
+                  "description": "Übersicht numerische Codes Gruppe 1"
+                }
+              ],
+              "links": []
+            },
+            {
+              "children": [
+                {
+                  "children": [
+                    {
+                      "children": [],
+                      "code": "XYZ1,23",
+                      "name": "",
+                      "label": "",
+                      "label-en": "",
+                      "position": 9,
+                      "full_typecode": "A GS123-XYZ1,23",
+                      "group": ""
+                    }
+                  ],
+                  "pattern": 7,
+                  "position": 9,
+                  "name": ""
+                }
+              ],
+              "code": "GS123",
+              "name": "",
+              "label": "GSGSGS: Hydraulik-Variante A\nLeistung: 150 kW\nDruck: 250 bar\n\n0-4: Numerische Codierung\nGruppe 1, Position 1-N",
+              "label-en": "",
+              "position": 3,
+              "is_intermediate_code": false,
+              "pictures": [
+                {
+                  "url": "/uploads/a.png",
+                  "description": "Schaltplan Variante A mit Druckbegrenzungsventil"
+                },
+                {
+                  "url": "/uploads/b.png",
+                  "description": "Technische Daten - Hydraulikpumpen"
+                },
+                {
+                  "url": "/uploads/a.png",
+                  "description": "Übersicht numerische Codes Gruppe 1"
+                }
+              ],
+              "links": [
+                {
+                  "url": "https://example.com/datasheet-gs.pdf",
+                  "title": "Technisches Datenblatt GS-Serie",
+                  "description": "Komplette technische Spezifikationen für Hydraulik-Variante A"
+                },
+                {
+                  "url": "https://example.com/manual-gs.pdf",
+                  "title": "Bedienungsanleitung"
+                }
+              ]
+            },
+            {
+              "children": [
+                {
+                  "children": [
+                    {
+                      "children": [],
+                      "code": "XYZ1,23",
+                      "name": "",
+                      "label": "",
+                      "label-en": "",
+                      "position": 9,
+                      "full_typecode": "A GS456-XYZ1,23",
+                      "group": ""
+                    }
+                  ],
+                  "pattern": 7,
+                  "position": 9,
+                  "name": ""
+                }
+              ],
+              "code": "GS456",
+              "name": "",
+              "label": "GSGSGS: Hydraulik-Variante A\nLeistung: 150 kW\nDruck: 250 bar\n\n0-4: Numerische Codierung\nGruppe 1, Position 1-N",
+              "label-en": "",
+              "position": 3,
+              "is_intermediate_code": false,
+              "pictures": [
+                {
+                  "url": "/uploads/a.png",
+                  "description": "Schaltplan Variante A mit Druckbegrenzungsventil"
+                },
+                {
+                  "url": "/uploads/b.png",
+                  "description": "Technische Daten - Hydraulikpumpen"
+                },
+                {
+                  "url": "/uploads/a.png",
+                  "description": "Übersicht numerische Codes Gruppe 1"
+                }
+              ],
+              "links": [
+                {
+                  "url": "https://example.com/datasheet-gs.pdf",
+                  "title": "Technisches Datenblatt GS-Serie",
+                  "description": "Komplette technische Spezifikationen für Hydraulik-Variante A"
+                },
+                {
+                  "url": "https://example.com/manual-gs.pdf",
+                  "title": "Bedienungsanleitung"
+                }
+              ]
+            },
+            {
+              "children": [
+                {
+                  "children": [
+                    {
+                      "children": [],
+                      "code": "XYZ1,23",
+                      "name": "",
+                      "label": "",
+                      "label-en": "",
+                      "position": 9,
+                      "full_typecode": "A GS789-XYZ1,23",
+                      "group": ""
+                    }
+                  ],
+                  "pattern": 7,
+                  "position": 9,
+                  "name": ""
+                }
+              ],
+              "code": "GS789",
+              "name": "",
+              "label": "GS789: TSL-K - Kompakt\nReduzierte Abmessungen\n\n0-4: Numerische Codierung\nGruppe 1, Position 1-N",
+              "label-en": "",
+              "position": 3,
+              "is_intermediate_code": false,
+              "pictures": [
+                {
+                  "url": "/uploads/a.png",
+                  "description": "Schaltplan Variante A mit Druckbegrenzungsventil"
+                },
+                {
+                  "url": "/uploads/b.png",
+                  "description": "Technische Daten - Hydraulikpumpen"
+                },
+                {
+                  "url": "/uploads/a.png",
+                  "description": "Abmessungen TSL-K vs. TSL Standard"
+                },
+                {
+                  "url": "/uploads/a.png",
+                  "description": "Übersicht numerische Codes Gruppe 1"
+                }
+              ],
+              "links": [
+                {
+                  "url": "https://example.com/datasheet-gs.pdf",
+                  "title": "Technisches Datenblatt GS-Serie",
+                  "description": "Komplette technische Spezifikationen für Hydraulik-Variante A"
+                },
+                {
+                  "url": "https://example.com/manual-gs.pdf",
+                  "title": "Bedienungsanleitung"
+                },
+                {
+                  "url": "https://example.com/tsl-k-specs.pdf",
+                  "title": "TSL-K Spezifikationen",
+                  "description": "Detaillierte Maßzeichnungen und technische Daten"
+                },
+                {
+                  "url": "https://example.com/assembly-guide.pdf",
+                  "title": "Montageanleitung TSL-K"
+                }
+              ]
+            }
+          ],
+          "pattern": 5,
+          "position": 3,
+          "name": ""
+        },
+        {
+          "children": [
+            {
+              "children": [
+                {
+                  "children": [
+                    {
+                      "children": [],
+                      "code": "XYZ123",
+                      "name": "",
+                      "label": "",
+                      "label-en": "",
+                      "position": 6,
+                      "full_typecode": "A GS-XYZ123",
+                      "group": ""
+                    }
+                  ],
+                  "pattern": 6,
+                  "position": 6,
+                  "name": ""
+                }
+              ],
+              "code": "GS",
+              "name": "",
+              "label": "GSGSGS: Hydraulik-Variante A\nLeistung: 150 kW\nDruck: 250 bar\n\n0-4: Numerische Codierung\nGruppe 1, Position 1-N",
+              "label-en": "",
+              "position": 3,
+              "is_intermediate_code": false,
+              "pictures": [
+                {
+                  "url": "/uploads/a.png",
+                  "description": "Schaltplan Variante A mit Druckbegrenzungsventil"
+                },
+                {
+                  "url": "/uploads/b.png",
+                  "description": "Technische Daten - Hydraulikpumpen"
+                },
+                {
+                  "url": "/uploads/a.png",
+                  "description": "Übersicht numerische Codes Gruppe 1"
+                }
+              ],
+              "links": [
+                {
+                  "url": "https://example.com/datasheet-gs.pdf",
+                  "title": "Technisches Datenblatt GS-Serie",
+                  "description": "Komplette technische Spezifikationen für Hydraulik-Variante A"
+                },
+                {
+                  "url": "https://example.com/manual-gs.pdf",
+                  "title": "Bedienungsanleitung"
+                }
+              ]
+            }
+          ],
+          "pattern": 2,
+          "position": 3,
+          "name": ""
+        }
+      ],
+      "code": "A",
+      "name": "",
+      "label": "",
+      "label-en": "",
+      "position": 1,
+      "is_intermediate_code": false
+    },
+    {
+      "children": [
+        {
+          "children": [
+            {
+              "children": [],
+              "code": "B1",
+              "name": "",
+              "label": "",
+              "label-en": "",
+              "position": 3,
+              "full_typecode": "B B1",
+              "group": ""
+            },
+            {
+              "children": [],
+              "code": "B2",
+              "name": "",
+              "label": "",
+              "label-en": "",
+              "position": 3,
+              "full_typecode": "B B2",
+              "group": ""
+            }
+          ],
+          "pattern": 2,
+          "position": 3,
+          "name": ""
+        }
+      ],
+      "code": "B",
+      "name": "",
+      "label": "",
+      "label-en": "",
+      "position": 1,
+      "is_intermediate_code": false
+    },
+    {
+      "children": [
+        {
+          "children": [
+            {
+              "children": [
+                {
+                  "children": [
+                    {
+                      "children": [],
+                      "code": "B",
+                      "name": "",
+                      "label": "",
+                      "label-en": "",
+                      "position": 5,
+                      "full_typecode": "C A-B",
+                      "group": ""
+                    }
+                  ],
+                  "pattern": 1,
+                  "position": 5,
+                  "name": ""
+                }
+              ],
+              "code": "A",
+              "name": "",
+              "label": "",
+              "label-en": "",
+              "position": 3,
+              "is_intermediate_code": false
+            }
+          ],
+          "pattern": 1,
+          "position": 3,
+          "name": ""
+        },
+        {
+          "children": [
+            {
+              "children": [
+                {
+                  "children": [
+                    {
+                      "children": [],
+                      "code": "C",
+                      "name": "",
+                      "label": "",
+                      "label-en": "",
+                      "position": 6,
+                      "full_typecode": "C AB-C",
+                      "group": ""
+                    }
+                  ],
+                  "pattern": 1,
+                  "position": 6,
+                  "name": ""
+                }
+              ],
+              "code": "AB",
+              "name": "",
+              "label": "",
+              "label-en": "",
+              "position": 3,
+              "is_intermediate_code": false
+            }
+          ],
+          "pattern": 2,
+          "position": 3,
+          "name": ""
+        }
+      ],
+      "code": "C",
+      "name": "",
+      "label": "",
+      "label-en": "",
+      "position": 1,
+      "is_intermediate_code": false
+    }
+  ],
+  "code": "root"
+}
