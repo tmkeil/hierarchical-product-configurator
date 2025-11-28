@@ -1,0 +1,26 @@
+# Backend Dependencies
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-dotenv==1.2.1
+pydantic==2.10.3
+python-multipart==0.0.20
+
+# Authentication & Security
+bcrypt==3.2.0
+PyJWT==2.3.0
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Database & Data Processing
+pandas==2.3.3
+numpy==2.2.6
+openpyxl==3.1.5
+
+# Tree Structure Utilities
+anytree==2.13.0
+
+# PostgreSQL Database Driver (optional - nur für PostgreSQL/Azure SQL)
+psycopg2-binary==2.9.10
+
+# Development Tools (optional)
+flake8==7.3.0
