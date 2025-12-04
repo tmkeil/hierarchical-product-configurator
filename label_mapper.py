@@ -734,6 +734,9 @@ def apply_relative_group_mappings(tree_data, matching_products, relative_group_m
     # WICHTIG: Geändert von einfachem seen_node_paths zu detailliertem Tracking,
     # damit mehrere Mappings auf dieselbe Gruppe möglich sind (z.B. Pos 1 und Pos 2)
     seen_node_mappings = set()
+    
+    # Sammle alle Kandidaten pro Node (für "longest match first" Logik)
+    node_candidates = {}  # Key: (node_path, group_num, position), Value: [(code_length, label, node_info, code)]
 
     # Für jede Gruppe-Position-Kombination, finde passende Knoten
     for key, code_label_map in group_position_lookup.items():
@@ -761,73 +764,91 @@ def apply_relative_group_mappings(tree_data, matching_products, relative_group_m
                 if full_code and not any(product.get('full_typecode', '') == full_code for product in matching_products):
                     continue
 
-                # Sicherstellen: Label nur einmal pro (node_path, group, position)
-                # Dadurch können mehrere Mappings auf dieselbe Gruppe angewendet werden
+                # Sammle Kandidaten (statt direkt anzuwenden)
                 mapping_key = (node_path, group_num, position)
-                if mapping_key in seen_node_mappings:
-                    continue
-                seen_node_mappings.add(mapping_key)
+                if mapping_key not in node_candidates:
+                    node_candidates[mapping_key] = []
+                
+                # Code-Länge als Priorität (längerer Code = höhere Priorität)
+                code_length = len(code)
+                node_candidates[mapping_key].append((code_length, label, node_info, code))
+    
+    # Jetzt wende nur das spezifischste Mapping pro Node an (longest match first)
+    for mapping_key, candidates in node_candidates.items():
+        node_path, group_num, position = mapping_key
+        
+        # Sortiere nach Code-Länge (absteigend) - längster Code zuerst
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        
+        # Nimm nur den ersten (längsten) Kandidaten
+        code_length, label, node_info, code = candidates[0]
+        node = node_info['node']
+        full_code = node_info.get('full_code', '')
+        
+        if mapping_key in seen_node_mappings:
+            continue
+        seen_node_mappings.add(mapping_key)
 
-                # alten Label-Wert ermitteln (vor jeder Änderung)
-                old_label = node.get('label', '') if node is not None else ''
+        # alten Label-Wert ermitteln (vor jeder Änderung)
+        old_label = node.get('label', '') if node is not None else ''
 
-                if verbose:
-                    label_text = label_to_string(label)
-                    print(f"Applying label '{label_text}' to node at path: {node_path} (old_label='{old_label}')")
+        if verbose:
+            label_text = label_to_string(label)
+            print(f"Applying label '{label_text}' (code='{code}', length={code_length}) to node at path: {node_path} (old_label='{old_label}')")
+            if len(candidates) > 1:
+                print(f"  ⚠️  Chose longest match '{code}' from {len(candidates)} candidates: {[c[3] for c in candidates]}")
 
-                # Anwenden / Dry-Run unterscheiden
-                applied = False
-                label_text = label_to_string(label)
-                if not dry_run:
-                    if old_label and old_label.strip():
-                        node['label'] = old_label + '\n\n' + label_text
-                        stats['labels_updated'] += 1
-                    else:
-                        node['label'] = label_text
-                        stats['labels_applied'] += 1
-                    
-                    # Speichere Bilder separat (für spätere DB-Integration)
-                    if 'pictures' not in node:
-                        node['pictures'] = []
-                    node['pictures'].extend(label.get('pictures', []))
-                    
-                    # Speichere Links separat (für spätere DB-Integration)
-                    if 'links' not in node:
-                        node['links'] = []
-                    node['links'].extend(label.get('links', []))
-                    
-                    applied = True
-                else:
-                    # Dry run: nur Statistik simulieren
-                    if old_label and old_label.strip():
-                        stats['labels_updated'] += 1
-                    else:
-                        stats['labels_applied'] += 1
-                    applied = False
+            if len(candidates) > 1:
+                print(f"  ⚠️  Chose longest match '{code}' from {len(candidates)} candidates: {[c[3] for c in candidates]}")
 
-                # Statistik-Update
-                stats['codes_matched'].add(f"{group_num}:{position}:{code}")
-                stats['nodes_labeled'].append({
-                    'node_path': node_path,
-                    'family': target_family,
-                    'group': group_num,
-                    'position': position,
-                    'extracted_code': node_info.get('extracted_code', code),
-                    'old_label': old_label,
-                    'new_label': label_text,
-                    'pictures': label.get('pictures', []),
-                    'links': label.get('links', []),
-                    'full_typecode': full_code,
-                    'applied': applied,
-                    'type': 'relative_group_mapping'
-                })
+        # Anwenden / Dry-Run unterscheiden
+        applied = False
+        label_text = label_to_string(label)
+        if not dry_run:
+            if old_label and old_label.strip():
+                node['label'] = old_label + '\n\n' + label_text
+                stats['labels_updated'] += 1
+            else:
+                node['label'] = label_text
+                stats['labels_applied'] += 1
+            
+            # Speichere Bilder separat (für spätere DB-Integration)
+            if 'pictures' not in node:
+                node['pictures'] = []
+            node['pictures'].extend(label.get('pictures', []))
+            
+            # Speichere Links separat (für spätere DB-Integration)
+            if 'links' not in node:
+                node['links'] = []
+            node['links'].extend(label.get('links', []))
+            
+            applied = True
+        else:
+            # Dry run: nur Statistik simulieren
+            if old_label and old_label.strip():
+                stats['labels_updated'] += 1
+            else:
+                stats['labels_applied'] += 1
+            applied = False
 
-                stats['products_processed'] += 1
+        # Statistik-Update
+        stats['codes_matched'].add(f"{group_num}:{position}:{code}")
+        stats['nodes_labeled'].append({
+            'node_path': node_path,
+            'family': target_family,
+            'group': group_num,
+            'position': position,
+            'extracted_code': node_info.get('extracted_code', code),
+            'old_label': old_label,
+            'new_label': label_text,
+            'pictures': label.get('pictures', []),
+            'links': label.get('links', []),
+            'full_typecode': full_code,
+            'applied': applied,
+            'type': 'relative_group_mapping'
+        })
 
-                # Markiere (node_path, group, position) als verarbeitet
-                # Dadurch können mehrere Mappings auf dieselbe Gruppe angewendet werden
-                # (z.B. Position 1 und Position 2)
-                # NICHT mehr: seen_node_paths.add(node_path)
+        stats['products_processed'] += 1
 
     return stats
 

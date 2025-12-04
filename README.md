@@ -107,6 +107,23 @@ Die größte Herausforderung war die Entwicklung einer JSON-Struktur, die alle P
 - **`schema_search.py`**: Filtert relevante Produkte aus der Baumstruktur für die Label-Zuordnung (2689 Zeilen)
 - **`label_mapper.py`**: Ordnet Labels automatisch zu Code-Segmenten mit kontext-spezifischen Regeln (3042 Zeilen)
 
+**3. Visual Mapping Tool - Vereinfachte Mapping-Regeln (In Entwicklung)**
+
+Historisch wurden Mapping-Regeln manuell in komplexen JSON-Strukturen definiert (`filter_criteria`, `group_position`). Das **Visual Mapping Tool** ersetzt diesen manuellen Prozess durch eine grafische Oberfläche.
+
+**Motivation:**
+- Manuelle JSON-Erstellung fehleranfällig und zeitaufwendig
+- Komplexe Syntax schwer zu verstehen für neue Bearbeiter
+- Keine Validierung während der Erstellung
+
+**Lösung:**
+- Web-basiertes UI zur Definition von Code-Schemas
+- Drag-&-Drop für Code-Segmente
+- Automatische Generierung von `filter_criteria` und `node_labels`
+- Live-Preview der resultierenden JSON-Struktur
+
+→ **Detaillierte Dokumentation**: Siehe [`README_MAPPING.md`](README_MAPPING.md)
+
 ## Datenvorbereitung & Workflow
 
 Das Repo enthält eine `baum.json`, die für das lokale Testen bereits verwendet werden kann.\

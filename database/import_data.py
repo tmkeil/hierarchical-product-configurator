@@ -28,6 +28,9 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from urllib.parse import urlparse
 
+# Import label parser
+from label_parser import parse_structured_label
+
 
 class VariantTreeImporter:
     """Imports product variant tree from JSON to SQLite or PostgreSQL."""
@@ -228,7 +231,7 @@ class VariantTreeImporter:
         code = node.get('code')
         name = node.get('name', '')
         label = node.get('label', '')
-        label_en = node.get('label_en')
+        label_en = node.get('label-en') or node.get('label_en')  # Support both formats
         position = node.get('position')
         pattern = node.get('pattern')
         full_typecode = node.get('full_typecode')
@@ -256,6 +259,10 @@ class VariantTreeImporter:
         
         node_id = self.cursor.lastrowid
         self.stats['nodes_imported'] += 1
+        
+        # NEW: Parse and import structured labels
+        if label or label_en:
+            self._import_node_labels(node_id, code, label, label_en)
         
         # Update statistics
         if parent_id is None:
@@ -311,6 +318,85 @@ class VariantTreeImporter:
         ))
         
         self.stats['dates_imported'] += 1
+    
+    def _import_node_labels(
+        self, 
+        node_id: int, 
+        node_code: Optional[str], 
+        label_de: Optional[str], 
+        label_en: Optional[str]
+    ):
+        """
+        Parse and import structured labels into node_labels table.
+        
+        Args:
+            node_id: ID of the parent node
+            node_code: Full code of the node (for position calculation)
+            label_de: German label text
+            label_en: English label text
+        """
+        # Parse German labels
+        if label_de:
+            segments_de = parse_structured_label(label_de, full_code=node_code)
+            
+            for seg in segments_de:
+                self.cursor.execute('''
+                    INSERT INTO node_labels (
+                        node_id, title, code_segment, position_start, position_end,
+                        label_de, display_order
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    node_id,
+                    seg.get('title'),
+                    seg.get('code_segment'),
+                    seg.get('position_start'),
+                    seg.get('position_end'),
+                    seg.get('label'),
+                    seg.get('display_order')
+                ))
+        
+        # Parse English labels and merge with German
+        if label_en:
+            segments_en = parse_structured_label(label_en, full_code=node_code)
+            
+            for seg in segments_en:
+                # Try to find matching German row by code_segment and position
+                # (title may differ in different languages)
+                self.cursor.execute('''
+                    SELECT id FROM node_labels
+                    WHERE node_id = ?
+                      AND code_segment IS ?
+                      AND position_start IS ?
+                      AND position_end IS ?
+                    LIMIT 1
+                ''', (node_id, seg.get('code_segment'), seg.get('position_start'), seg.get('position_end')))
+                
+                existing = self.cursor.fetchone()
+                
+                if existing:
+                    # Update existing row with English label and title
+                    self.cursor.execute('''
+                        UPDATE node_labels
+                        SET label_en = ?
+                        WHERE id = ?
+                    ''', (seg.get('label'), existing[0]))
+                else:
+                    # Insert new row (English has different structure than German)
+                    self.cursor.execute('''
+                        INSERT INTO node_labels (
+                            node_id, title, code_segment, position_start, position_end,
+                            label_en, display_order
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        node_id,
+                        seg.get('title'),
+                        seg.get('code_segment'),
+                        seg.get('position_start'),
+                        seg.get('position_end'),
+                        seg.get('label'),
+                        seg.get('display_order')
+                    ))
+
     
     def build_closure_table(self):
         """Build closure table (node_paths) for all nodes."""
@@ -479,13 +565,17 @@ def main():
         # If --recreate: Clear product tables but keep users
         if args.recreate:
             print("⚠️  Clearing product data (users table preserved)...")
+            importer.cursor.execute("DROP TABLE IF EXISTS node_labels")
             importer.cursor.execute("DROP TABLE IF EXISTS nodes")
             importer.cursor.execute("DROP TABLE IF EXISTS node_paths")
             importer.cursor.execute("DROP TABLE IF EXISTS date_info")
             importer.cursor.execute("DROP TABLE IF EXISTS constraints")
             importer.cursor.execute("DROP TABLE IF EXISTS constraint_conditions")
             importer.cursor.execute("DROP TABLE IF EXISTS constraint_codes")
-            importer.cursor.execute("DELETE FROM sqlite_sequence WHERE name IN ('nodes', 'node_paths', 'date_info', 'constraints', 'constraint_conditions', 'constraint_codes')")
+            # sqlite_sequence only exists if there are autoincrement tables, so check first
+            result = importer.cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sqlite_sequence'").fetchone()
+            if result:
+                importer.cursor.execute("DELETE FROM sqlite_sequence WHERE name IN ('nodes', 'node_paths', 'date_info', 'constraints', 'constraint_conditions', 'constraint_codes', 'node_labels')")
             importer.conn.commit()
             print("✅ Product tables cleared, users preserved!")
         

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useQuery, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useAuth } from './contexts/AuthContext';
 import { ChangePasswordModal } from './components/ChangePasswordModal';
+import { CodeHints } from './components/CodeHints';
 import { 
   fetchProductFamilies, 
   fetchFamilyGroups,
@@ -2136,6 +2137,15 @@ const SmartAddNodeModal: React.FC<SmartAddNodeModalProps> = ({
               </div>
             )}
           </div>
+
+          {/* Code Hints - zeigt Struktur basierend auf Parent Node */}
+          {code.length > 0 && parentId && (
+            <CodeHints 
+              nodeId={parentId}
+              partialCode={code}
+              className="mt-3"
+            />
+          )}
 
           {/* Optional Fields */}
           <div className="grid grid-cols-2 gap-4">

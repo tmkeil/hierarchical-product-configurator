@@ -75,9 +75,16 @@ def filter_existing_pictures(pictures_json: str, uploads_dir: Path) -> List[dict
             url = pic.get('url', '')
             if not url:
                 continue
-                
-            filename = url.split('/')[-1]
-            file_path = uploads_dir / filename
+            
+            # Extrahiere den relativen Pfad nach /uploads/
+            # Z.B. "/uploads/btl/sonderstecker_z_.png" -> "btl/sonderstecker_z_.png"
+            if url.startswith('/uploads/'):
+                relative_path = url[len('/uploads/'):]
+            else:
+                # Fallback: nur Dateiname
+                relative_path = url.split('/')[-1]
+            
+            file_path = uploads_dir / relative_path
             
             # Nur Bilder behalten, deren Dateien existieren
             if file_path.exists():
@@ -1116,6 +1123,97 @@ def check_code_exists(
         conn.close()
 
 
+@app.get("/api/code-hints/{node_id}/{partial_code}")
+def get_code_hints(node_id: int, partial_code: str):
+    """
+    Liefert character-by-character Hints für einen Code basierend auf node_labels.
+    
+    Args:
+        node_id: ID des Nodes dessen Labels abgefragt werden
+        partial_code: Teilweise eingegebener Code (z.B. "PSI")
+    
+    Returns:
+        Array von Hints mit Position, Zeichen, Titel und Labels
+        
+    Beispiel Response:
+    [
+        {
+            "position": 1,
+            "character": "P",
+            "title": "Technik",
+            "label_de": "Drahtschalter",
+            "label_en": "Wire switch",
+            "matched": true
+        },
+        {
+            "position": 2,
+            "character": "S", 
+            "title": "Funktion",
+            "label_de": "Schließer",
+            "label_en": "Normally open",
+            "matched": true
+        },
+        {
+            "position": 3,
+            "character": "I",
+            "title": "Ausstattung",
+            "label_de": "IO-Link",
+            "label_en": "IO-Link",
+            "matched": false
+        }
+    ]
+    """
+    conn = get_db()
+    
+    try:
+        # Hole alle label segments für diesen Node
+        cursor = conn.execute("""
+            SELECT 
+                code_segment,
+                position_start,
+                position_end,
+                title,
+                label_de,
+                label_en
+            FROM node_labels
+            WHERE node_id = ?
+              AND code_segment IS NOT NULL
+            ORDER BY position_start
+        """, (node_id,))
+        
+        segments = cursor.fetchall()
+        
+        # Build hints array
+        hints = []
+        partial_len = len(partial_code)
+        
+        for seg in segments:
+            code_seg = seg['code_segment']
+            pos_start = seg['position_start']
+            pos_end = seg['position_end']
+            
+            # Check if this segment matches the partial code
+            # position_start is 1-based, convert to 0-based for string slicing
+            matched = False
+            if pos_start is not None and pos_end is not None:
+                segment_in_partial = partial_code[pos_start-1:pos_end] if pos_start <= partial_len else ""
+                matched = (segment_in_partial == code_seg)
+            
+            hints.append({
+                "position": pos_start,
+                "character": code_seg,
+                "title": seg['title'],
+                "label_de": seg['label_de'],
+                "label_en": seg['label_en'],
+                "matched": matched
+            })
+        
+        return {"hints": hints}
+        
+    finally:
+        conn.close()
+
+
 # ============================================================
 # QUERY 2: Get Children (mit Pattern Container Skip)
 # ============================================================
@@ -2101,7 +2199,10 @@ def check_node_code(code: str):
             """, (parts[0],))
             
             node = cursor.fetchone()
-            
+
+
+
+        
             if node:
                 # Finde alle Produktfamilien in denen dieser Code vorkommt
                 cursor.execute("""

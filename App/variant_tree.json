@@ -1,0 +1,756 @@
+{
+  "children": [
+    {
+      "children": [
+        {
+          "children": [
+            {
+              "children": [
+                {
+                  "children": [
+                    {
+                      "children": [],
+                      "name": "",
+                      "label": "",
+                      "label-en": "",
+                      "position": 6,
+                      "full_typecode": "A A1-X",
+                      "group": "",
+                      "date_info": {
+                        "typecode_count": 1,
+                        "creation_date": {
+                          "earliest": "08.03.1997",
+                          "latest": "08.03.1997"
+                        },
+                        "modification_date": {
+                          "earliest": "08.03.1997",
+                          "latest": "08.03.1997"
+                        }
+                      }
+                    },
+                    {
+                      "children": [],
+                      "name": "",
+                      "label": "",
+                      "label-en": "",
+                      "position": 6,
+                      "full_typecode": "A A1-Y",
+                      "group": "",
+                      "date_info": {
+                        "typecode_count": 1,
+                        "creation_date": {
+                          "earliest": "01.12.2024",
+                          "latest": "01.12.2024"
+                        },
+                        "modification_date": {
+                          "earliest": "01.12.2024",
+                          "latest": "01.12.2024"
+                        }
+                      }
+                    }
+                  ],
+                  "pattern": 1,
+                  "position": 6,
+                  "name": "",
+                  "date_info": {
+                    "typecode_count": 2,
+                    "creation_date": {
+                      "earliest": "08.03.1997",
+                      "latest": "01.12.2024"
+                    },
+                    "modification_date": {
+                      "earliest": "08.03.1997",
+                      "latest": "01.12.2024"
+                    }
+                  }
+                }
+              ],
+              "name": "",
+              "label": "",
+              "label-en": "",
+              "position": 3,
+              "is_intermediate_code": true,
+              "full_typecode": "A A1",
+              "group": "",
+              "date_info": {
+                "typecode_count": 3,
+                "creation_date": {
+                  "earliest": "08.03.1997",
+                  "latest": "06.10.2025"
+                },
+                "modification_date": {
+                  "earliest": "08.03.1997",
+                  "latest": "06.10.2025"
+                }
+              }
+            },
+            {
+              "children": [
+                {
+                  "children": [
+                    {
+                      "children": [],
+                      "name": "",
+                      "label": "",
+                      "label-en": "",
+                      "position": 6,
+                      "full_typecode": "A A2-Z",
+                      "group": "",
+                      "date_info": {
+                        "typecode_count": 1,
+                        "creation_date": {
+                          "earliest": "23.12.2026",
+                          "latest": "23.12.2026"
+                        },
+                        "modification_date": {
+                          "earliest": "23.12.2026",
+                          "latest": "23.12.2026"
+                        }
+                      }
+                    }
+                  ],
+                  "pattern": 1,
+                  "position": 6,
+                  "name": "",
+                  "date_info": {
+                    "typecode_count": 1,
+                    "creation_date": {
+                      "earliest": "23.12.2026",
+                      "latest": "23.12.2026"
+                    },
+                    "modification_date": {
+                      "earliest": "23.12.2026",
+                      "latest": "23.12.2026"
+                    }
+                  }
+                }
+              ],
+              "name": "",
+              "label": "",
+              "label-en": "",
+              "position": 3,
+              "is_intermediate_code": true,
+              "full_typecode": "A A2",
+              "group": "",
+              "date_info": {
+                "typecode_count": 2,
+                "creation_date": {
+                  "earliest": "06.10.2015",
+                  "latest": "23.12.2026"
+                },
+                "modification_date": {
+                  "earliest": "06.10.2015",
+                  "latest": "23.12.2026"
+                }
+              }
+            }
+          ],
+          "pattern": 2,
+          "position": 3,
+          "name": "",
+          "date_info": {
+            "typecode_count": 5,
+            "creation_date": {
+              "earliest": "08.03.1997",
+              "latest": "23.12.2026"
+            },
+            "modification_date": {
+              "earliest": "08.03.1997",
+              "latest": "23.12.2026"
+            }
+          }
+        },
+        {
+          "children": [
+            {
+              "children": [
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "children": [
+                            {
+                              "children": [
+                                {
+                                  "children": [
+                                    {
+                                      "children": [],
+                                      "name": "",
+                                      "label": "",
+                                      "label-en": "",
+                                      "position": 18,
+                                      "full_typecode": "A A12-XYZ123-33A-LOP",
+                                      "group": "",
+                                      "date_info": {
+                                        "typecode_count": 1,
+                                        "creation_date": {
+                                          "earliest": "13.05.2018",
+                                          "latest": "13.05.2018"
+                                        },
+                                        "modification_date": {
+                                          "earliest": "13.05.2018",
+                                          "latest": "13.05.2018"
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "pattern": 3,
+                                  "position": 18,
+                                  "name": "",
+                                  "date_info": {
+                                    "typecode_count": 1,
+                                    "creation_date": {
+                                      "earliest": "13.05.2018",
+                                      "latest": "13.05.2018"
+                                    },
+                                    "modification_date": {
+                                      "earliest": "13.05.2018",
+                                      "latest": "13.05.2018"
+                                    }
+                                  }
+                                }
+                              ],
+                              "name": "",
+                              "label": "",
+                              "label-en": "",
+                              "position": 14,
+                              "is_intermediate_code": false,
+                              "date_info": {
+                                "typecode_count": 1,
+                                "creation_date": {
+                                  "earliest": "13.05.2018",
+                                  "latest": "13.05.2018"
+                                },
+                                "modification_date": {
+                                  "earliest": "13.05.2018",
+                                  "latest": "13.05.2018"
+                                }
+                              }
+                            }
+                          ],
+                          "pattern": 3,
+                          "position": 14,
+                          "name": "",
+                          "date_info": {
+                            "typecode_count": 1,
+                            "creation_date": {
+                              "earliest": "13.05.2018",
+                              "latest": "13.05.2018"
+                            },
+                            "modification_date": {
+                              "earliest": "13.05.2018",
+                              "latest": "13.05.2018"
+                            }
+                          }
+                        }
+                      ],
+                      "name": "",
+                      "label": "",
+                      "label-en": "",
+                      "position": 7,
+                      "is_intermediate_code": false,
+                      "date_info": {
+                        "typecode_count": 1,
+                        "creation_date": {
+                          "earliest": "13.05.2018",
+                          "latest": "13.05.2018"
+                        },
+                        "modification_date": {
+                          "earliest": "13.05.2018",
+                          "latest": "13.05.2018"
+                        }
+                      }
+                    }
+                  ],
+                  "pattern": 6,
+                  "position": 7,
+                  "name": "",
+                  "date_info": {
+                    "typecode_count": 1,
+                    "creation_date": {
+                      "earliest": "13.05.2018",
+                      "latest": "13.05.2018"
+                    },
+                    "modification_date": {
+                      "earliest": "13.05.2018",
+                      "latest": "13.05.2018"
+                    }
+                  }
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "children": [
+                            {
+                              "children": [
+                                {
+                                  "children": [
+                                    {
+                                      "children": [],
+                                      "name": "",
+                                      "label": "",
+                                      "label-en": "",
+                                      "position": 16,
+                                      "full_typecode": "A A12-ZABC-333-KOP",
+                                      "group": "",
+                                      "date_info": {
+                                        "typecode_count": 1,
+                                        "creation_date": {
+                                          "earliest": "09.07.1999",
+                                          "latest": "09.07.1999"
+                                        },
+                                        "modification_date": {
+                                          "earliest": "09.07.1999",
+                                          "latest": "09.07.1999"
+                                        }
+                                      }
+                                    },
+                                    {
+                                      "children": [],
+                                      "name": "",
+                                      "label": "",
+                                      "label-en": "",
+                                      "position": 16,
+                                      "full_typecode": "A A12-ZABC-333-AAA",
+                                      "group": "",
+                                      "date_info": {
+                                        "typecode_count": 1,
+                                        "creation_date": {
+                                          "earliest": "24.11.2003",
+                                          "latest": "24.11.2003"
+                                        },
+                                        "modification_date": {
+                                          "earliest": "24.11.2003",
+                                          "latest": "24.11.2003"
+                                        }
+                                      }
+                                    }
+                                  ],
+                                  "pattern": 3,
+                                  "position": 16,
+                                  "name": "",
+                                  "date_info": {
+                                    "typecode_count": 2,
+                                    "creation_date": {
+                                      "earliest": "09.07.1999",
+                                      "latest": "24.11.2003"
+                                    },
+                                    "modification_date": {
+                                      "earliest": "09.07.1999",
+                                      "latest": "24.11.2003"
+                                    }
+                                  }
+                                }
+                              ],
+                              "name": "",
+                              "label": "",
+                              "label-en": "",
+                              "position": 12,
+                              "is_intermediate_code": false,
+                              "date_info": {
+                                "typecode_count": 2,
+                                "creation_date": {
+                                  "earliest": "09.07.1999",
+                                  "latest": "24.11.2003"
+                                },
+                                "modification_date": {
+                                  "earliest": "09.07.1999",
+                                  "latest": "24.11.2003"
+                                }
+                              }
+                            },
+                            {
+                              "children": [
+                                {
+                                  "children": [
+                                    {
+                                      "children": [],
+                                      "name": "",
+                                      "label": "",
+                                      "label-en": "",
+                                      "position": 16,
+                                      "full_typecode": "A A12-ZABC-444-V",
+                                      "group": "",
+                                      "date_info": {
+                                        "typecode_count": 1
+                                      }
+                                    }
+                                  ],
+                                  "pattern": 1,
+                                  "position": 16,
+                                  "name": "",
+                                  "date_info": {
+                                    "typecode_count": 1
+                                  }
+                                }
+                              ],
+                              "name": "",
+                              "label": "",
+                              "label-en": "",
+                              "position": 12,
+                              "is_intermediate_code": false,
+                              "date_info": {
+                                "typecode_count": 1
+                              }
+                            }
+                          ],
+                          "pattern": 3,
+                          "position": 12,
+                          "name": "",
+                          "date_info": {
+                            "typecode_count": 3,
+                            "creation_date": {
+                              "earliest": "09.07.1999",
+                              "latest": "24.11.2003"
+                            },
+                            "modification_date": {
+                              "earliest": "09.07.1999",
+                              "latest": "24.11.2003"
+                            }
+                          }
+                        }
+                      ],
+                      "name": "",
+                      "label": "",
+                      "label-en": "",
+                      "position": 7,
+                      "is_intermediate_code": false,
+                      "date_info": {
+                        "typecode_count": 3,
+                        "creation_date": {
+                          "earliest": "09.07.1999",
+                          "latest": "24.11.2003"
+                        },
+                        "modification_date": {
+                          "earliest": "09.07.1999",
+                          "latest": "24.11.2003"
+                        }
+                      }
+                    }
+                  ],
+                  "pattern": 4,
+                  "position": 7,
+                  "name": "",
+                  "date_info": {
+                    "typecode_count": 3,
+                    "creation_date": {
+                      "earliest": "09.07.1999",
+                      "latest": "24.11.2003"
+                    },
+                    "modification_date": {
+                      "earliest": "09.07.1999",
+                      "latest": "24.11.2003"
+                    }
+                  }
+                }
+              ],
+              "name": "",
+              "label": "",
+              "label-en": "",
+              "position": 3,
+              "is_intermediate_code": false,
+              "date_info": {
+                "typecode_count": 4,
+                "creation_date": {
+                  "earliest": "09.07.1999",
+                  "latest": "13.05.2018"
+                },
+                "modification_date": {
+                  "earliest": "09.07.1999",
+                  "latest": "13.05.2018"
+                }
+              }
+            }
+          ],
+          "pattern": 3,
+          "position": 3,
+          "name": "",
+          "date_info": {
+            "typecode_count": 4,
+            "creation_date": {
+              "earliest": "09.07.1999",
+              "latest": "13.05.2018"
+            },
+            "modification_date": {
+              "earliest": "09.07.1999",
+              "latest": "13.05.2018"
+            }
+          }
+        }
+      ],
+      "name": "",
+      "label": "",
+      "label-en": "",
+      "position": 1,
+      "is_intermediate_code": false,
+      "date_info": {
+        "typecode_count": 9,
+        "creation_date": {
+          "earliest": "08.03.1997",
+          "latest": "23.12.2026"
+        },
+        "modification_date": {
+          "earliest": "08.03.1997",
+          "latest": "23.12.2026"
+        }
+      }
+    },
+    {
+      "children": [
+        {
+          "children": [
+            {
+              "children": [],
+              "name": "",
+              "label": "",
+              "label-en": "",
+              "position": 3,
+              "full_typecode": "B B1",
+              "group": "",
+              "date_info": {
+                "typecode_count": 1,
+                "creation_date": {
+                  "earliest": "18.12.2030",
+                  "latest": "18.12.2030"
+                },
+                "modification_date": {
+                  "earliest": "18.12.2030",
+                  "latest": "18.12.2030"
+                }
+              }
+            },
+            {
+              "children": [],
+              "name": "",
+              "label": "",
+              "label-en": "",
+              "position": 3,
+              "full_typecode": "B B2",
+              "group": "",
+              "date_info": {
+                "typecode_count": 1,
+                "creation_date": {
+                  "earliest": "03.07.1995",
+                  "latest": "03.07.1995"
+                },
+                "modification_date": {
+                  "earliest": "03.07.1995",
+                  "latest": "03.07.1995"
+                }
+              }
+            }
+          ],
+          "pattern": 2,
+          "position": 3,
+          "name": "",
+          "date_info": {
+            "typecode_count": 2,
+            "creation_date": {
+              "earliest": "03.07.1995",
+              "latest": "18.12.2030"
+            },
+            "modification_date": {
+              "earliest": "03.07.1995",
+              "latest": "18.12.2030"
+            }
+          }
+        }
+      ],
+      "name": "",
+      "label": "",
+      "label-en": "",
+      "position": 1,
+      "is_intermediate_code": false,
+      "date_info": {
+        "typecode_count": 2,
+        "creation_date": {
+          "earliest": "03.07.1995",
+          "latest": "18.12.2030"
+        },
+        "modification_date": {
+          "earliest": "03.07.1995",
+          "latest": "18.12.2030"
+        }
+      }
+    },
+    {
+      "children": [
+        {
+          "children": [
+            {
+              "children": [
+                {
+                  "children": [
+                    {
+                      "children": [],
+                      "name": "",
+                      "label": "",
+                      "label-en": "",
+                      "position": 5,
+                      "full_typecode": "C A-B",
+                      "group": "",
+                      "date_info": {
+                        "typecode_count": 1,
+                        "creation_date": {
+                          "earliest": "01.12.2024",
+                          "latest": "01.12.2024"
+                        },
+                        "modification_date": {
+                          "earliest": "01.12.2024",
+                          "latest": "01.12.2024"
+                        }
+                      }
+                    }
+                  ],
+                  "pattern": 1,
+                  "position": 5,
+                  "name": "",
+                  "date_info": {
+                    "typecode_count": 1,
+                    "creation_date": {
+                      "earliest": "01.12.2024",
+                      "latest": "01.12.2024"
+                    },
+                    "modification_date": {
+                      "earliest": "01.12.2024",
+                      "latest": "01.12.2024"
+                    }
+                  }
+                }
+              ],
+              "name": "",
+              "label": "",
+              "label-en": "",
+              "position": 3,
+              "is_intermediate_code": false,
+              "date_info": {
+                "typecode_count": 1,
+                "creation_date": {
+                  "earliest": "01.12.2024",
+                  "latest": "01.12.2024"
+                },
+                "modification_date": {
+                  "earliest": "01.12.2024",
+                  "latest": "01.12.2024"
+                }
+              }
+            }
+          ],
+          "pattern": 1,
+          "position": 3,
+          "name": "",
+          "date_info": {
+            "typecode_count": 1,
+            "creation_date": {
+              "earliest": "01.12.2024",
+              "latest": "01.12.2024"
+            },
+            "modification_date": {
+              "earliest": "01.12.2024",
+              "latest": "01.12.2024"
+            }
+          }
+        },
+        {
+          "children": [
+            {
+              "children": [
+                {
+                  "children": [
+                    {
+                      "children": [],
+                      "name": "",
+                      "label": "",
+                      "label-en": "",
+                      "position": 6,
+                      "full_typecode": "C AB-C",
+                      "group": "",
+                      "date_info": {
+                        "typecode_count": 1,
+                        "creation_date": {
+                          "earliest": "23.12.2026",
+                          "latest": "23.12.2026"
+                        },
+                        "modification_date": {
+                          "earliest": "23.12.2026",
+                          "latest": "23.12.2026"
+                        }
+                      }
+                    }
+                  ],
+                  "pattern": 1,
+                  "position": 6,
+                  "name": "",
+                  "date_info": {
+                    "typecode_count": 1,
+                    "creation_date": {
+                      "earliest": "23.12.2026",
+                      "latest": "23.12.2026"
+                    },
+                    "modification_date": {
+                      "earliest": "23.12.2026",
+                      "latest": "23.12.2026"
+                    }
+                  }
+                }
+              ],
+              "name": "",
+              "label": "",
+              "label-en": "",
+              "position": 3,
+              "is_intermediate_code": false,
+              "date_info": {
+                "typecode_count": 1,
+                "creation_date": {
+                  "earliest": "23.12.2026",
+                  "latest": "23.12.2026"
+                },
+                "modification_date": {
+                  "earliest": "23.12.2026",
+                  "latest": "23.12.2026"
+                }
+              }
+            }
+          ],
+          "pattern": 2,
+          "position": 3,
+          "name": "",
+          "date_info": {
+            "typecode_count": 1,
+            "creation_date": {
+              "earliest": "23.12.2026",
+              "latest": "23.12.2026"
+            },
+            "modification_date": {
+              "earliest": "23.12.2026",
+              "latest": "23.12.2026"
+            }
+          }
+        }
+      ],
+      "name": "",
+      "label": "",
+      "label-en": "",
+      "position": 1,
+      "is_intermediate_code": false,
+      "date_info": {
+        "typecode_count": 2,
+        "creation_date": {
+          "earliest": "01.12.2024",
+          "latest": "23.12.2026"
+        },
+        "modification_date": {
+          "earliest": "01.12.2024",
+          "latest": "23.12.2026"
+        }
+      }
+    }
+  ],
+  "name": "",
+  "label": "",
+  "label-en": "",
+  "is_intermediate_code": false
+}

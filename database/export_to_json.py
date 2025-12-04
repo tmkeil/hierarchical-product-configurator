@@ -20,6 +20,7 @@ import sqlite3
 import json
 import sys
 from typing import Dict, List, Any, Optional
+from label_parser import reconstruct_label
 
 
 def get_db_connection(db_path: str = "variantenbaum.db") -> sqlite3.Connection:
@@ -29,13 +30,14 @@ def get_db_connection(db_path: str = "variantenbaum.db") -> sqlite3.Connection:
     return conn
 
 
-def build_node_dict(row: sqlite3.Row) -> Dict[str, Any]:
+def build_node_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> Dict[str, Any]:
     """
     Konvertiert eine DB Row 1:1 in ein Node Dictionary im JSON-Format.
     
     WICHTIG: Übernimmt Werte DIREKT aus der DB!
     - Wenn Wert NULL ist → Feld wird nicht ins JSON geschrieben
     - Reihenfolge der Felder: children, code/pattern, name, label, label-en, position, is_intermediate_code, full_typecode, group
+    - Labels werden aus node_labels Tabelle rekonstruiert (falls vorhanden)
     """
     from collections import OrderedDict
     node = OrderedDict()
@@ -54,8 +56,57 @@ def build_node_dict(row: sqlite3.Row) -> Dict[str, Any]:
             node['code'] = row['code']
         
         node['name'] = row['name'] if row['name'] else ""
-        node['label'] = row['label'] if row['label'] else ""
-        node['label-en'] = row['label_en'] if row['label_en'] else ""  # Bindestrich!
+        
+        # Reconstruct labels from node_labels table if they exist
+        label_de = ""
+        label_en = ""
+        
+        cursor = conn.execute("""
+            SELECT title, code_segment, position_start, position_end, 
+                   label_de, label_en, display_order
+            FROM node_labels
+            WHERE node_id = ?
+            ORDER BY display_order
+        """, (row['id'],))
+        
+        label_rows = cursor.fetchall()
+        
+        if label_rows:
+            # Build separate lists for German and English
+            labels_de = []
+            labels_en = []
+            
+            for lrow in label_rows:
+                # German label
+                if lrow['label_de']:
+                    labels_de.append({
+                        'title': lrow['title'],
+                        'code_segment': lrow['code_segment'],
+                        'label_de': lrow['label_de'],
+                        'display_order': lrow['display_order']
+                    })
+                
+                # English label
+                if lrow['label_en']:
+                    labels_en.append({
+                        'title': lrow['title'],
+                        'code_segment': lrow['code_segment'],
+                        'label_en': lrow['label_en'],
+                        'display_order': lrow['display_order']
+                    })
+            
+            # Reconstruct labels
+            if labels_de:
+                label_de = reconstruct_label(labels_de)
+            if labels_en:
+                label_en = reconstruct_label(labels_en)
+        else:
+            # Fallback to original label fields from nodes table
+            label_de = row['label'] if row['label'] else ""
+            label_en = row['label_en'] if row['label_en'] else ""
+        
+        node['label'] = label_de
+        node['label-en'] = label_en  # Bindestrich!
         node['position'] = row['position']
         
         # is_intermediate_code: Nur hinzufügen wenn in DB gesetzt (nicht NULL)
@@ -70,6 +121,28 @@ def build_node_dict(row: sqlite3.Row) -> Dict[str, Any]:
         # group: Nur wenn in DB gesetzt (nicht NULL)
         if row['group_name'] is not None:
             node['group'] = row['group_name']
+        
+        # pictures und links: Beide zusammen exportieren (oder beide weglassen)
+        # Nur hinzufügen wenn mindestens eins nicht leer ist
+        pictures_data = []
+        links_data = []
+        
+        if row['pictures']:
+            try:
+                pictures_data = json.loads(row['pictures'])
+            except (json.JSONDecodeError, TypeError):
+                pictures_data = []
+        
+        if row['links']:
+            try:
+                links_data = json.loads(row['links'])
+            except (json.JSONDecodeError, TypeError):
+                links_data = []
+        
+        # Füge beide Felder hinzu wenn mindestens eins Daten hat
+        if pictures_data or links_data:
+            node['pictures'] = pictures_data
+            node['links'] = links_data
     
     return node
 
@@ -105,7 +178,7 @@ def build_tree_recursive(conn: sqlite3.Connection, parent_id: Optional[int]) -> 
     
     children = []
     for row in cursor:
-        node = build_node_dict(row)
+        node = build_node_dict(conn, row)
         
         # Rekursiv Kinder holen
         node['children'] = build_tree_recursive(conn, row['id'])
@@ -169,5 +242,13 @@ def export_database_to_json(db_path: str = "variantenbaum.db", output_file: str 
 
 
 if __name__ == "__main__":
-    output_file = sys.argv[1] if len(sys.argv) > 1 else "variantenbaum_export.json"
-    export_database_to_json(output_file=output_file)
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Export database to JSON')
+    parser.add_argument('--db', default='variantenbaum.db', help='Database file path')
+    parser.add_argument('--output', default='variantenbaum_export.json', help='Output JSON file path')
+    
+    args = parser.parse_args()
+    
+    export_database_to_json(db_path=args.db, output_file=args.output)
+

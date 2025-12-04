@@ -204,12 +204,20 @@ export function AdminPanel() {
             <h1 className="text-3xl font-bold text-gray-900 mb-2">User Management</h1>
             <p className="text-gray-600">Manage users and permissions</p>
           </div>
-          <button
-            onClick={() => navigate('/')}
-            className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-medium flex items-center gap-2"
-          >
-            ← Back to Main
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={() => navigate('/mapping-tool')}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center gap-2"
+            >
+              🗺️ Mapping Tool
+            </button>
+            <button
+              onClick={() => navigate('/')}
+              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-medium flex items-center gap-2"
+            >
+              ← Back to Main
+            </button>
+          </div>
         </div>
 
         {/* Create User Button */}

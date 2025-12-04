@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     -- Links (JSON array with external links)
     links TEXT DEFAULT '[]',  -- JSON: [{"url": "...", "title": "...", "description": "...", "added_at": "..."}]
     
-    -- Constraints
+    -- Metadata
     FOREIGN KEY (parent_id) REFERENCES nodes(id) ON DELETE CASCADE,
     
     -- Ensure either code OR pattern is set (not both)
@@ -102,6 +102,51 @@ CREATE TABLE IF NOT EXISTS node_dates (
     -- Constraints
     FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
 );
+
+
+-- ============================================================================
+-- TABLE: node_labels
+-- ============================================================================
+-- Stores structured labels with code segment information
+-- Enables character-by-character code hints and granular label management
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS node_labels (
+    -- Primary key
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    
+    -- Reference to parent node
+    node_id INTEGER NOT NULL,
+    
+    -- Label structure
+    title TEXT,                      -- Category name (e.g., "Spannung", "Schaltabstand")
+    code_segment TEXT,               -- Extracted code (e.g., "P", "20", "I") - can be NULL
+    position_start INTEGER,          -- Start position in node's code (1-based)
+    position_end INTEGER,            -- End position in node's code (1-based)
+    
+    -- Label content
+    label_de TEXT,                   -- German description
+    label_en TEXT,                   -- English description
+    
+    -- Display order
+    display_order INTEGER DEFAULT 0, -- Preserve original order for export
+    
+    -- Constraints
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+
+-- ============================================================================
+-- INDEXES for node_labels
+-- ============================================================================
+
+-- For retrieving all labels of a node
+CREATE INDEX IF NOT EXISTS idx_node_labels_node ON node_labels(node_id);
+
+-- For code hint lookups
+CREATE INDEX IF NOT EXISTS idx_node_labels_code ON node_labels(code_segment) WHERE code_segment IS NOT NULL;
+
+-- For ordered retrieval
+CREATE INDEX IF NOT EXISTS idx_node_labels_order ON node_labels(node_id, display_order);
 
 
 -- ============================================================================

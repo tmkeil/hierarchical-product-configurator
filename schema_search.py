@@ -84,20 +84,30 @@ def parse_pattern_filter(pattern_str):
     Parst einen Pattern-Filter-String zu einer Liste von Regeln.
     
     Args:
-        pattern_str: String im Format "1=3,2=4,last=6" oder "1=3-5,3=2" oder "3!=2" (ungleich)
+        pattern_str: String in einem der folgenden Formate:
+            - Alte Format: "1=3,2=4,last=6" oder "1=3-5,3=2" oder "3!=2" (ungleich)
+            - Neues Format (Gruppen-Längen): "1:2|3|4,2:4|5"
         
     Returns:
         list: Liste von Dictionaries mit Pattern-Regeln oder None bei Fehlern
         
-    Beispiele:
+    Beispiele (altes Format):
         "1=3,2=4" → [{'position': 1, 'min_len': 3, 'max_len': 3, 'negate': False}, {'position': 2, 'min_len': 4, 'max_len': 4, 'negate': False}]
         "1=3-5,last=6" → [{'position': 1, 'min_len': 3, 'max_len': 5, 'negate': False}, {'position': 'last', 'min_len': 6, 'max_len': 6, 'negate': False}]
         "3!=2" → [{'position': 3, 'min_len': 2, 'max_len': 2, 'negate': True}]
-        "3!=2-4" → [{'position': 3, 'min_len': 2, 'max_len': 4, 'negate': True}]
+        
+    Beispiele (neues Format - Gruppen-Längen):
+        "1:2|3|4,2:4|5" → [{'type': 'group_length', 'group': 1, 'allowed_lengths': [2,3,4]}, 
+                           {'type': 'group_length', 'group': 2, 'allowed_lengths': [4,5]}]
     """
     if not pattern_str:
         return []
     
+    # Erkenne Format: Wenn ":" enthalten ist und kein "=" → neues Gruppen-Längen-Format
+    if ':' in pattern_str and '=' not in pattern_str:
+        return parse_group_length_pattern(pattern_str)
+    
+    # Altes Format (Position-basiert)
     try:
         rules = []
         parts = [p.strip() for p in pattern_str.split(',') if p.strip()]
@@ -147,6 +157,55 @@ def parse_pattern_filter(pattern_str):
         
         return rules
     except (ValueError, AttributeError) as e:
+        return None
+
+
+def parse_group_length_pattern(pattern_str):
+    """
+    Parst Gruppen-Längen-Pattern im Format "1:2|3|4,2:4|5"
+    
+    Args:
+        pattern_str: String im Format "gruppe:länge|länge|länge,gruppe:länge|länge"
+        
+    Returns:
+        list: Liste von Dictionaries mit Gruppen-Längen-Regeln
+        
+    Beispiel:
+        "1:2|3|4,2:4|5" → [{'type': 'group_length', 'group': 1, 'allowed_lengths': [2,3,4]},
+                           {'type': 'group_length', 'group': 2, 'allowed_lengths': [4,5]}]
+    """
+    if not pattern_str:
+        return []
+    
+    try:
+        rules = []
+        # Split by comma to get individual group rules
+        group_parts = [p.strip() for p in pattern_str.split(',') if p.strip()]
+        
+        for part in group_parts:
+            # Format: "gruppe:länge|länge|länge"
+            if ':' not in part:
+                continue
+                
+            group_str, lengths_str = part.split(':', 1)
+            group_num = int(group_str.strip())
+            
+            # Parse allowed lengths (separated by |)
+            length_strs = lengths_str.split('|')
+            allowed_lengths = [int(l.strip()) for l in length_strs if l.strip()]
+            
+            if not allowed_lengths:
+                continue
+                
+            rules.append({
+                'type': 'group_length',
+                'group': group_num,
+                'allowed_lengths': sorted(allowed_lengths)
+            })
+        
+        return rules
+    except (ValueError, AttributeError) as e:
+        print(f"⚠️  Fehler beim Parsen von Gruppen-Längen-Pattern '{pattern_str}': {e}")
         return None
 
 
@@ -857,13 +916,14 @@ def calculate_code_schema(code_parts):
     return [len(part) for part in code_parts]
 
 
-def matches_pattern_filter(schema, pattern_rules):
+def matches_pattern_filter(schema, pattern_rules, code_parts=None):
     """
     Prüft ob ein Schema den Pattern-Filter-Regeln entspricht.
     
     Args:
         schema: Schema als Liste von Längen [3,3,3,4]
         pattern_rules: Liste von Pattern-Regeln
+        code_parts: Optional - Liste von Code-Teilen für Gruppen-Längen-Validierung
         
     Returns:
         bool: True wenn alle Regeln erfüllt sind
@@ -872,6 +932,28 @@ def matches_pattern_filter(schema, pattern_rules):
         return True
     
     for rule in pattern_rules:
+        # Neues Format: Gruppen-Längen
+        if rule.get('type') == 'group_length':
+            if not code_parts:
+                continue  # Kann nicht validieren ohne code_parts
+                
+            group_num = rule['group']
+            allowed_lengths = rule['allowed_lengths']
+            
+            # Finde die Länge der Gruppe
+            if group_num < 1 or group_num > len(code_parts):
+                return False
+                
+            group_code = code_parts[group_num - 1]  # 1-basiert → 0-basiert
+            group_length = len(group_code)
+            
+            # Prüfe ob Länge erlaubt ist
+            if group_length not in allowed_lengths:
+                return False
+                
+            continue
+        
+        # Altes Format: Position-basiert
         position = rule['position']
         min_len = rule['min_len']
         max_len = rule['max_len']
@@ -1565,7 +1647,7 @@ def find_products_by_schema(data, target_schemas=None, include_dates=False, prod
                     # Prüfe Pattern-Filter
                     pattern_matches = True
                     if pattern_rules:
-                        pattern_matches = matches_pattern_filter(product_schema, pattern_rules)
+                        pattern_matches = matches_pattern_filter(product_schema, pattern_rules, code_parts)
                     
                     # Prüfe Absolute-Position-Filter
                     position_matches = True
