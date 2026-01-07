@@ -28,13 +28,13 @@ interface CreateUserRequest {
 }
 
 export function AdminPanel() {
-  const { user } = useAuth();
+  const { user, handle401Error } = useAuth();
   const navigate = useNavigate();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Modal State
+  // User Modal State
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [formData, setFormData] = useState<CreateUserRequest>({
     username: '',
@@ -64,6 +64,11 @@ export function AdminPanel() {
       });
 
       if (!response.ok) {
+        // Handle 401 Unauthorized
+        if (response.status === 401) {
+          handle401Error();
+          return;
+        }
         throw new Error('Failed to load users');
       }
 
@@ -96,6 +101,11 @@ export function AdminPanel() {
       });
 
       if (!response.ok) {
+        // Handle 401 Unauthorized
+        if (response.status === 401) {
+          handle401Error();
+          return;
+        }
         const errorData = await response.json();
         throw new Error(errorData.detail || 'Failed to delete user');
       }
@@ -139,6 +149,11 @@ export function AdminPanel() {
       });
 
       if (!response.ok) {
+        // Handle 401 Unauthorized
+        if (response.status === 401) {
+          handle401Error();
+          return;
+        }
         const errorData = await response.json();
         throw new Error(errorData.detail || 'Failed to create user');
       }
@@ -206,6 +221,12 @@ export function AdminPanel() {
           </div>
           <div className="flex gap-3">
             <button
+              onClick={() => navigate('/lifecycle')}
+              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium flex items-center gap-2"
+            >
+              🔄 Product Lifecycle
+            </button>
+            <button
               onClick={() => navigate('/mapping-tool')}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center gap-2"
             >
@@ -220,8 +241,8 @@ export function AdminPanel() {
           </div>
         </div>
 
-        {/* Create User Button */}
-        <div className="mb-6">
+        {/* Action Buttons */}
+        <div className="mb-6 flex gap-3">
           <button
             onClick={() => {
               // Reset Form beim Öffnen

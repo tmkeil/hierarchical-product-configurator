@@ -1,17 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { useQuery, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
+import { useQuery, QueryClient, QueryClientProvider, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from './contexts/AuthContext';
 import { ChangePasswordModal } from './components/ChangePasswordModal';
 import { CodeHints } from './components/CodeHints';
+import { SuccessorWarning } from './components/SuccessorWarning';
+import { OptionCard } from './components/OptionCard';
+import { SchemaVisualization } from './components/SchemaVisualization';
 import { 
   fetchProductFamilies, 
   fetchFamilyGroups,
   fetchGroupMaxLevel,
   fetchAvailableOptions,
+  fetchDerivedGroupName,
   fetchMaxLevel,
   checkNodeCode,
   decodeTypecode,
+  searchCodeAllOccurrences,
   suggestCodes,
   checkCodeExists,
   bulkFilterNodes,
@@ -23,6 +29,23 @@ import {
   updateConstraint,
   deleteConstraint,
   validateCodeAgainstConstraints,
+  fetchProductSuccessor,
+  createFamily,
+  updateFamily,
+  deleteFamily,
+  previewFamilyDeletion,
+  deleteNode,
+  previewNodeDeletion,
+  type CreateFamilyRequest,
+  type UpdateFamilyRequest,
+  type DeleteFamilyPreview,
+  type DeleteNodePreview,
+  createSuccessorBulk,
+  saveKMATReference,
+  getKMATReference,
+  deleteKMATReference,
+  getFamilySchemaVisualization,
+  type KMATReferenceRequest,
   type Node,
   type NodePicture,
   type NodeLink,
@@ -30,12 +53,14 @@ import {
   type Selection,
   type NodeCheckResult,
   type TypecodeDecodeResult,
+  type CodeSearchResult,
+  type CodeOccurrence,
   type BulkFilterRequest,
   type Constraint,
   type ConstraintCondition,
   type ConstraintCode,
   type CreateConstraintRequest,
-  type ConstraintValidationResult
+  type FamilySchemaVisualization,
 } from './api/client';
 import './App.css';
 
@@ -476,6 +501,20 @@ const GroupSelector: React.FC<GroupSelectorProps> = ({
     return Array.from(names).sort();
   }, [options]);
 
+  // Sammle nur Names von KOMPATIBLEN Optionen (für Anzeige neben Gruppennamen)
+  const compatibleNames = React.useMemo(() => {
+    const names = new Set<string>();
+    options.filter(opt => opt.is_compatible).forEach(opt => {
+      if (opt.name && opt.name.trim()) {
+        opt.name.split(',').forEach(n => {
+          const trimmed = n.trim();
+          if (trimmed) names.add(trimmed);
+        });
+      }
+    });
+    return Array.from(names).sort();
+  }, [options]);
+
   // Filter options based on search term only
   const filterBySearchTerm = (opts: AvailableOption[]) => {
     if (!searchTerm.trim()) return opts;
@@ -534,7 +573,14 @@ const GroupSelector: React.FC<GroupSelectorProps> = ({
   return (
     <div className="mb-4 relative min-h-[60px]">
       <label className="block text-sm font-medium text-gray-700 mb-2">
-        {groupName}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span>{groupName}</span>
+          {compatibleNames.length > 0 && (
+            <span className="text-xs text-gray-500 font-normal">
+              ({compatibleNames.join(' | ')})
+            </span>
+          )}
+        </div>
       </label>
 
       <div className="flex gap-4 items-start">
@@ -700,34 +746,22 @@ const GroupSelector: React.FC<GroupSelectorProps> = ({
                 {Array.from(compatibleByPattern.entries()).map(([pattern, opts]) => (
                   <div key={`pattern-compat-${pattern}`} className="mb-2 last:mb-0">
                     {opts.map((option, index) => (
-                      <div
+                      <OptionCard
                         key={`${level}-${option.code}-${option.position}-${index}`}
-                        className={`flex items-center justify-between px-4 py-2.5 hover:bg-blue-50 text-gray-900 ${
-                          selectedOption?.code === option.code ? 'bg-blue-100' : ''
-                        }`}
-                        onMouseEnter={() => setHoveredOption(option)}
+                        option={option}
+                        level={level}
+                        index={index}
+                        isSelected={selectedOption?.code === option.code}
+                        isCompatible={true}
+                        onSelect={handleOptionSelect}
+                        onEdit={(opt) => {
+                          setEditingNode(opt);
+                          setIsEditModalOpen(true);
+                        }}
+                        onMouseEnter={setHoveredOption}
                         onMouseLeave={() => setHoveredOption(null)}
-                      >
-                        <span 
-                          className="flex-1 cursor-pointer"
-                          onClick={() => handleOptionSelect(option)}
-                        >
-                          {formatOptionDisplay(option)}
-                        </span>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setEditingNode(option);
-                            setIsEditModalOpen(true);
-                          }}
-                          className="ml-2 p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-100 rounded transition-colors"
-                          title="Edit node details"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                          </svg>
-                        </button>
-                      </div>
+                        formatDisplay={formatOptionDisplay}
+                      />
                     ))}
                   </div>
                 ))}
@@ -736,34 +770,22 @@ const GroupSelector: React.FC<GroupSelectorProps> = ({
                 {Array.from(incompatibleByPattern.entries()).map(([pattern, opts]) => (
                   <div key={`pattern-incomp-${pattern}`} className="mb-2 last:mb-0">
                     {opts.map((option, index) => (
-                      <div
+                      <OptionCard
                         key={`${level}-incomp-${option.code}-${index}`}
-                        className={`flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 text-gray-400 ${
-                          selectedOption?.code === option.code ? 'bg-gray-100' : ''
-                        }`}
-                        onMouseEnter={() => setHoveredOption(option)}
+                        option={option}
+                        level={level}
+                        index={index}
+                        isSelected={selectedOption?.code === option.code}
+                        isCompatible={false}
+                        onSelect={handleOptionSelect}
+                        onEdit={(opt) => {
+                          setEditingNode(opt);
+                          setIsEditModalOpen(true);
+                        }}
+                        onMouseEnter={setHoveredOption}
                         onMouseLeave={() => setHoveredOption(null)}
-                      >
-                        <span 
-                          className="flex-1 cursor-pointer"
-                          onClick={() => handleOptionSelect(option)}
-                        >
-                          {formatOptionDisplay(option)}
-                        </span>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setEditingNode(option);
-                            setIsEditModalOpen(true);
-                          }}
-                          className="ml-2 p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded transition-colors"
-                          title="Edit node details"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                          </svg>
-                        </button>
-                      </div>
+                        formatDisplay={formatOptionDisplay}
+                      />
                     ))}
                   </div>
                 ))}
@@ -816,6 +838,18 @@ const GroupSelector: React.FC<GroupSelectorProps> = ({
                     className="ml-1"
                   />
                 </div>
+
+                {/* Name anzeigen */}
+                {(hoveredOption || selectedOption)?.name && (
+                  <div className="mb-2">
+                    <span className="text-xs font-medium text-gray-600">Name:</span>
+                    <div className="mt-1">
+                      <span className="bg-purple-100 text-purple-800 text-xs font-medium px-2 py-1 rounded">
+                        {(hoveredOption || selectedOption)?.name}
+                      </span>
+                    </div>
+                  </div>
+                )}
 
                 <div className="text-gray-700 mb-2 whitespace-pre-line">
                   {(hoveredOption || selectedOption)?.label ||
@@ -870,8 +904,10 @@ const GroupSelector: React.FC<GroupSelectorProps> = ({
         }}
         node={editingNode}
         onSaved={() => {
-          // Refresh options by triggering parent to refetch
-          window.location.reload(); // Simple solution for now
+          // Invalidate queries to refresh UI (no page reload needed)
+          queryClient.invalidateQueries({ queryKey: ['children'] });
+          queryClient.invalidateQueries({ queryKey: ['options'] });
+          queryClient.invalidateQueries({ queryKey: ['level-options'] });
         }}
         familyCode={familyCode || ''}
         parentSelections={previousSelections}
@@ -1249,6 +1285,7 @@ const TypecodeDecoderModal: React.FC<TypecodeDecoderModalProps> = ({ isOpen, onC
   const [searchCode, setSearchCode] = useState('');
   const [checkResult, setCheckResult] = useState<NodeCheckResult | null>(null);
   const [decodeResult, setDecodeResult] = useState<TypecodeDecodeResult | null>(null);
+  const [codeSearchResult, setCodeSearchResult] = useState<CodeSearchResult | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   const [showImageModal, setShowImageModal] = useState(false);
   const [imageModalPictures, setImageModalPictures] = useState<NodePicture[]>([]);
@@ -1261,18 +1298,31 @@ const TypecodeDecoderModal: React.FC<TypecodeDecoderModalProps> = ({ isOpen, onC
     setIsChecking(true);
     
     try {
-      // Parallel beide APIs aufrufen
-      const [checkRes, decodeRes] = await Promise.all([
-        checkNodeCode(searchCode.trim()),
-        decodeTypecode(searchCode.trim())
-      ]);
+      const trimmed = searchCode.trim();
+      const parts = trimmed.split(/[\s_-]+/);
       
-      setCheckResult(checkRes);
-      setDecodeResult(decodeRes);
+      // Wenn nur ein Teil (einzelner Code): Verwende die neue search-code API
+      if (parts.length === 1) {
+        const searchRes = await searchCodeAllOccurrences(trimmed);
+        setCodeSearchResult(searchRes);
+        setCheckResult(null);
+        setDecodeResult(null);
+      } else {
+        // Wenn mehrere Teile (vollständiger Typecode): Verwende alte APIs
+        const [checkRes, decodeRes] = await Promise.all([
+          checkNodeCode(trimmed),
+          decodeTypecode(trimmed)
+        ]);
+        
+        setCheckResult(checkRes);
+        setDecodeResult(decodeRes);
+        setCodeSearchResult(null);
+      }
     } catch (error) {
       console.error('Search failed:', error);
       setCheckResult({ exists: false, families: [] });
       setDecodeResult(null);
+      setCodeSearchResult(null);
     } finally {
       setIsChecking(false);
     }
@@ -1288,6 +1338,7 @@ const TypecodeDecoderModal: React.FC<TypecodeDecoderModalProps> = ({ isOpen, onC
     setSearchCode('');
     setCheckResult(null);
     setDecodeResult(null);
+    setCodeSearchResult(null);
     onClose();
   };
 
@@ -1317,7 +1368,7 @@ const TypecodeDecoderModal: React.FC<TypecodeDecoderModalProps> = ({ isOpen, onC
           <div className="flex gap-3">
             <input
               type="text"
-              placeholder="Produktcode eingeben (z.B. 'A A1-X' oder 'XYZ123')..."
+              placeholder="Produktcode eingeben (z.B. 'BCC M313 * OP123' oder 'XYZ123')..."
               className="flex-1 px-4 py-3 text-base border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
               value={searchCode}
               onChange={(e) => setSearchCode(e.target.value)}
@@ -1332,6 +1383,9 @@ const TypecodeDecoderModal: React.FC<TypecodeDecoderModalProps> = ({ isOpen, onC
               {isChecking ? 'Analysiere...' : 'Prüfen & Entschlüsseln'}
             </button>
           </div>
+          <p className="mt-2 text-sm text-gray-500">
+            💡 Tipp: Verwende <code className="bg-gray-100 px-2 py-0.5 rounded">*</code> als Wildcard für beliebige Codes (z.B. <code className="bg-gray-100 px-2 py-0.5 rounded">BCC M313 * OP123</code>)
+          </p>
         </div>
 
         {/* Results */}
@@ -1405,7 +1459,7 @@ const TypecodeDecoderModal: React.FC<TypecodeDecoderModalProps> = ({ isOpen, onC
                   <>
                     <span className="text-base font-medium text-gray-700">Normalisiert:</span>
                     <span className="ml-3 font-mono text-green-600 bg-green-50 px-3 py-1 rounded text-lg">
-                      {decodeResult.normalized_code}
+                      {decodeResult.normalized_code.split(' ').join('-')}
                     </span>
                   </>
                 )}
@@ -1498,6 +1552,132 @@ const TypecodeDecoderModal: React.FC<TypecodeDecoderModalProps> = ({ isOpen, onC
               <p className="text-gray-500 text-lg">
                 Keine Treffer für "<span className="font-mono">{searchCode}</span>" gefunden.
               </p>
+            </div>
+          )}
+
+          {/* Code Search Result (für einzelne Codes) */}
+          {codeSearchResult && (
+            <div className={`p-6 rounded-lg border-2 ${
+              codeSearchResult.exists 
+                ? 'bg-green-50 border-green-300' 
+                : 'bg-red-50 border-red-300'
+            }`}>
+              <div className="flex items-center gap-3 mb-4">
+                <span className={`text-xl font-bold ${
+                  codeSearchResult.exists ? 'text-green-800' : 'text-red-800'
+                }`}>
+                  {codeSearchResult.exists ? '✅ Code gefunden' : '❌ Code nicht gefunden'}
+                </span>
+                <span className="px-3 py-1 text-sm font-medium rounded-full bg-blue-100 text-blue-800">
+                  Codesegment
+                </span>
+              </div>
+
+              {codeSearchResult.exists && codeSearchResult.occurrences.length > 0 && (
+                <div className="space-y-4">
+                  <div className="mb-4">
+                    <span className="text-gray-700 font-medium">Code:</span>
+                    <span className="ml-2 font-mono font-bold text-xl text-gray-900">{codeSearchResult.code}</span>
+                  </div>
+
+                  <div className="mb-2 text-sm text-gray-600">
+                    Dieser Code kommt an <span className="font-semibold">{codeSearchResult.occurrences.length}</span> verschiedenen Stellen vor:
+                  </div>
+
+                  {/* Gruppiert nach Familie */}
+                  {(() => {
+                    // Gruppiere occurrences nach Familie
+                    const byFamily = codeSearchResult.occurrences.reduce((acc, occ) => {
+                      if (!acc[occ.family]) {
+                        acc[occ.family] = [];
+                      }
+                      acc[occ.family].push(occ);
+                      return acc;
+                    }, {} as Record<string, CodeOccurrence[]>);
+
+                    return Object.entries(byFamily).map(([family, occs]) => (
+                      <div key={family} className="bg-white border border-gray-300 rounded-lg p-4 mb-3">
+                        <div className="flex items-center gap-2 mb-3">
+                          <span className="bg-purple-100 text-purple-800 text-sm font-semibold px-3 py-1 rounded">
+                            Produktfamilie: {family}
+                          </span>
+                          {occs.length > 1 && (
+                            <span className="text-xs text-gray-500">
+                              ({occs.length} Level)
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Levels innerhalb dieser Familie */}
+                        <div className="space-y-3 ml-4">
+                          {occs.map((occ) => (
+                            <div key={`${family}-${occ.level}`} className="border-l-4 border-blue-300 pl-4 py-2 bg-gray-50 rounded">
+                              <div className="flex items-center gap-3 mb-2">
+                                <span className="bg-blue-100 text-blue-800 text-sm font-medium px-3 py-1 rounded">
+                                  Level {occ.level}
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  {occ.node_count} {occ.node_count === 1 ? 'Node' : 'Nodes'}
+                                </span>
+                              </div>
+
+                              {/* Names */}
+                              {occ.names.length > 0 && (
+                                <div className="mb-2">
+                                  <span className="text-sm font-medium text-gray-700">Namen:</span>
+                                  <div className="mt-1 flex flex-wrap gap-1">
+                                    {occ.names.map((name, idx) => (
+                                      <span key={idx} className="bg-purple-100 text-purple-800 text-xs font-medium px-2 py-1 rounded">
+                                        {name}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Labels DE */}
+                              {occ.labels_de.length > 0 && (
+                                <div className="mb-2">
+                                  <span className="text-sm font-medium text-gray-700">Labels (DE):</span>
+                                  <div className="mt-1 space-y-1">
+                                    {occ.labels_de.map((label, idx) => (
+                                      <div key={idx} className="text-sm text-gray-900 ml-2 whitespace-pre-line">
+                                        • {label}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Labels EN */}
+                              {occ.labels_en.length > 0 && (
+                                <div>
+                                  <span className="text-sm font-medium text-gray-700">Labels (EN):</span>
+                                  <div className="mt-1 space-y-1">
+                                    {occ.labels_en.map((label, idx) => (
+                                      <div key={idx} className="text-sm text-gray-900 ml-2 whitespace-pre-line">
+                                        • {label}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ));
+                  })()}
+                </div>
+              )}
+
+              {!codeSearchResult.exists && (
+                <div className="text-center py-8">
+                  <p className="text-gray-500 text-lg">
+                    Der Code "<span className="font-mono font-bold">{codeSearchResult.code}</span>" existiert nicht in der Datenbank.
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -2001,6 +2181,20 @@ const SmartAddNodeModal: React.FC<SmartAddNodeModalProps> = ({
       
       setResult({ success: true, message });
       
+      // Invalidate queries to refresh UI
+      queryClient.invalidateQueries({ queryKey: ['families'] });
+      queryClient.invalidateQueries({ queryKey: ['product-families'] });
+      
+      // WICHTIG: Invalidate children queries für das aktuelle Level
+      // Dies sorgt dafür dass der neue Node sofort im Dropdown erscheint
+      queryClient.invalidateQueries({ queryKey: ['children', level] });
+      queryClient.invalidateQueries({ queryKey: ['options'] });
+      
+      // Invalidate all level-options from this level and above
+      for (let i = level; i <= 20; i++) {
+        queryClient.invalidateQueries({ queryKey: ['level-options', i] });
+      }
+      
       // Close modal after brief success message
       setTimeout(() => {
         onClose();
@@ -2095,7 +2289,7 @@ const SmartAddNodeModal: React.FC<SmartAddNodeModalProps> = ({
                           type="button"
                           onClick={() => {
                             // Öffne Constraints-Modal und zeige diese Regel
-                            alert(`TODO: Öffne Constraints-Modal für Regel ${constraint.id}`);
+                            console.log(`TODO: Öffne Constraints-Modal für Regel ${constraint.id}`);
                           }}
                           className="ml-2 text-blue-600 hover:text-blue-800 underline"
                         >
@@ -2655,6 +2849,11 @@ const EditNodeModal: React.FC<EditNodeModalProps> = ({ isOpen, onClose, node, on
         message: `${response.updated_count} Node(s) erfolgreich aktualisiert!` 
       });
       
+      // Invalidate queries to refresh UI
+      queryClient.invalidateQueries({ queryKey: ['children'] });
+      queryClient.invalidateQueries({ queryKey: ['options'] });
+      queryClient.invalidateQueries({ queryKey: ['level-options'] });
+      
       // Notify parent and close
       setTimeout(() => {
         onSaved();
@@ -3107,6 +3306,7 @@ interface ConstraintsModalProps {
 }
 
 const ConstraintsModal: React.FC<ConstraintsModalProps> = ({ isOpen, onClose, level, familyCode }) => {
+  const queryClient = useQueryClient();
   const [constraints, setConstraints] = useState<Constraint[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showEditor, setShowEditor] = useState(false);
@@ -3152,9 +3352,10 @@ const ConstraintsModal: React.FC<ConstraintsModalProps> = ({ isOpen, onClose, le
     try {
       await deleteConstraint(constraintId);
       await loadConstraints();
+      // Invalidate constraint validation queries
+      queryClient.invalidateQueries({ queryKey: ['constraint-validation'] });
     } catch (error) {
       console.error('Failed to delete constraint:', error);
-      alert('Fehler beim Löschen der Constraint');
     }
   };
 
@@ -3177,9 +3378,10 @@ const ConstraintsModal: React.FC<ConstraintsModalProps> = ({ isOpen, onClose, le
       setShowEditor(false);
       setEditingConstraint(null);
       await loadConstraints();
+      // Invalidate constraint validation queries
+      queryClient.invalidateQueries({ queryKey: ['constraint-validation'] });
     } catch (error) {
       console.error('Failed to save constraint:', error);
-      alert('Fehler beim Speichern der Constraint');
     }
   };
 
@@ -3913,6 +4115,11 @@ const BulkEditModal: React.FC<BulkEditModalProps> = ({ isOpen, onClose, level, f
         message: `${response.updated_count} Nodes erfolgreich aktualisiert!` 
       });
 
+      // Invalidate queries to refresh UI
+      queryClient.invalidateQueries({ queryKey: ['children'] });
+      queryClient.invalidateQueries({ queryKey: ['options'] });
+      queryClient.invalidateQueries({ queryKey: ['level-options'] });
+
       // Reset edit form after successful update
       setTimeout(() => {
         setEditName('');
@@ -4612,6 +4819,16 @@ const AddNodeModal: React.FC<AddNodeModalProps> = ({ isOpen, onClose }) => {
       
       if (response.ok) {
         setResult({ success: true, message: `Node created with ID ${data.node_id}!` });
+        
+        // Invalidate queries to refresh UI
+        queryClient.invalidateQueries({ queryKey: ['families'] });
+        queryClient.invalidateQueries({ queryKey: ['product-families'] });
+        queryClient.invalidateQueries({ queryKey: ['children', formData.level] });
+        queryClient.invalidateQueries({ queryKey: ['options'] });
+        for (let i = formData.level; i <= 20; i++) {
+          queryClient.invalidateQueries({ queryKey: ['level-options', i] });
+        }
+        
         setTimeout(() => {
           onClose();
           setFormData({ code: '', name: '', label: '', label_en: '', level: 1, parent_id: '', position: 0, group_name: '' });
@@ -4790,11 +5007,46 @@ const VariantenbaumConfigurator: React.FC = () => {
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
   const [selectedGroupFilter, setSelectedGroupFilter] = useState<string | null>(null);
   const [addNodeContext, setAddNodeContext] = useState<{ level: number; familyCode: string } | null>(null);
+  const [showSchemaVisualization, setShowSchemaVisualization] = useState(false);
+  const [schemaVisualizationData, setSchemaVisualizationData] = useState<FamilySchemaVisualization | null>(null);
   const [showResultImageModal, setShowResultImageModal] = useState(false);
   const [resultImageModalPictures, setResultImageModalPictures] = useState<NodePicture[]>([]);
   const [showResultLinksModal, setShowResultLinksModal] = useState(false);
   const [resultLinksModalLinks, setResultLinksModalLinks] = useState<NodeLink[]>([]);
+  const [showBannerDetailModal, setShowBannerDetailModal] = useState(false);
+  const [bannerDetailSelection, setBannerDetailSelection] = useState<{ level: number; option: AvailableOption } | null>(null);
+  const [isSuccessorSelectionMode, setIsSuccessorSelectionMode] = useState(false);
+  const [sourceSelectionForSuccessor, setSourceSelectionForSuccessor] = useState<{
+    nodeIds: number[];  // ALL filtered node IDs (from ids array)
+    code: string;
+    label: string;
+  } | null>(null);
+  const [showCreateFamilyModal, setShowCreateFamilyModal] = useState(false);
+  const [showEditFamilyModal, setShowEditFamilyModal] = useState(false);
+  const [showDeleteFamilyModal, setShowDeleteFamilyModal] = useState(false);
+  const [showDeleteNodeModal, setShowDeleteNodeModal] = useState(false);
+  const [editingFamily, setEditingFamily] = useState<Node | null>(null);
+  const [deletingFamily, setDeletingFamily] = useState<Node | null>(null);
+  const [deletingNode, setDeletingNode] = useState<{ id: number; code: string; level: number } | null>(null);
+  const [deletePreview, setDeletePreview] = useState<DeleteFamilyPreview | null>(null);
+  const [deleteNodePreview, setDeleteNodePreview] = useState<DeleteNodePreview | null>(null);
+  const [familyFormData, setFamilyFormData] = useState<CreateFamilyRequest>({
+    code: '',
+    label: null,
+    label_en: null,
+  });
+  const [editFamilyFormData, setEditFamilyFormData] = useState<UpdateFamilyRequest>({
+    label: '',
+    label_en: null,
+  });
   const familySearchInputRef = useRef<HTMLInputElement>(null);
+
+  // KMAT Reference State
+  const [showKMATModal, setShowKMATModal] = useState(false);
+  const [kmatInput, setKMATInput] = useState('');
+  
+  // Tooltip State für Banner
+  const [hoveredTooltip, setHoveredTooltip] = useState<{type: 'family' | 'code' | 'more', level?: number, data?: any} | null>(null);
 
   // Auto-focus für Produktfamilien-Suchfeld
   useEffect(() => {
@@ -4802,6 +5054,16 @@ const VariantenbaumConfigurator: React.FC = () => {
       familySearchInputRef.current.focus();
     }
   }, [isFamilyDropdownOpen]);
+
+  // Populate edit form when editing family
+  useEffect(() => {
+    if (editingFamily) {
+      setEditFamilyFormData({
+        label: editingFamily.label || '',
+        label_en: editingFamily.label_en || null,
+      });
+    }
+  }, [editingFamily]);
 
   // Query 1: Get Product Families
   const { data: families, isLoading: familiesLoading } = useQuery({
@@ -4845,6 +5107,27 @@ const VariantenbaumConfigurator: React.FC = () => {
     queryKey: ['max-level', lastNode?.code, selectedFamily?.code],
     queryFn: () => fetchMaxLevel(lastNode!.code, selectedFamily?.code || undefined),
     enabled: lastNode !== null && selectedFamily !== null,
+  });
+
+  // Query 4: Abgeleiteter Group Name basierend auf bisherigen Auswahlen
+  const { data: derivedGroupNameData } = useQuery({
+    queryKey: ['derived-group-name', selectedFamily?.code, selections],
+    queryFn: async () => {
+      if (!selectedFamily) return null;
+      
+      const previousSelections: Selection[] = [
+        { code: selectedFamily.code!, level: 0, id: selectedFamily.id, ids: [] },
+        ...Object.entries(selections).map(([level, option]) => ({
+          code: option.code,
+          level: parseInt(level),
+          id: option.id,
+          ids: option.ids || [],
+        }))
+      ];
+      
+      return fetchDerivedGroupName(previousSelections);
+    },
+    enabled: selectedFamily !== null && Object.keys(selections).length > 0,
   });
 
   // Update maxVisibleLevel basierend auf API Response
@@ -5085,7 +5368,7 @@ const VariantenbaumConfigurator: React.FC = () => {
     }
   };
 
-  // Generiere Typecode
+  // Generiere Typecode (mit Leerzeichen für API-Calls)
   const typecode = selectedFamily 
     ? [
         selectedFamily.code,
@@ -5095,6 +5378,21 @@ const VariantenbaumConfigurator: React.FC = () => {
           .map(level => selections[level].code)
       ].join(' ')
     : '';
+  
+  // Display-Version mit Wildcards und Bindestrichen (nur für Anzeige)
+  const displayTypecode = selectedFamily
+    ? (() => {
+        const maxLevel = Math.max(...Object.keys(selections).map(Number), 0);
+        const parts = [selectedFamily.code];
+        
+        // Füge alle Level von 1 bis maxLevel hinzu, mit '*' für übersprungene
+        for (let i = 1; i <= maxLevel; i++) {
+          parts.push(selections[i] ? selections[i].code : '*');
+        }
+        
+        return parts.join('-');
+      })()
+    : '';
 
   // Hole decode result für das Result-Feld (um group_name zu bekommen)
   const resultDecodeQuery = useQuery({
@@ -5102,6 +5400,184 @@ const VariantenbaumConfigurator: React.FC = () => {
     queryFn: () => decodeTypecode(typecode),
     enabled: !!typecode && Object.keys(selections).length > 0,
     staleTime: 30000,
+  });
+
+  // Product Successor Check - Phase 1: Leaf/Intermediate Products
+  const productSuccessorQuery = useQuery({
+    queryKey: ['product-successor', typecode, selections],
+    queryFn: async () => {
+      if (!typecode) return { has_successor: false };
+      
+      const previousSelections: Selection[] = selectedFamily ? [
+        { code: selectedFamily.code!, level: 0, id: selectedFamily.id, ids: [] },
+        ...Object.entries(selections).map(([level, option]) => ({
+          code: option.code,
+          level: parseInt(level),
+          id: option.id,
+          ids: option.ids || [],
+        }))
+      ] : [];
+      
+      return fetchProductSuccessor(typecode, previousSelections);
+    },
+    enabled: !!typecode && Object.keys(selections).length > 0,
+    staleTime: 30000,
+  });
+
+  // KMAT Reference Query - Get existing KMAT for current configuration
+  const pathNodeIds = selectedFamily && Object.keys(selections).length > 0
+    ? [selectedFamily.id, ...Object.values(selections).map(s => s.id)].filter((id): id is number => id !== undefined)
+    : [];
+  
+  const kmatQuery = useQuery({
+    queryKey: ['kmat-reference', selectedFamily?.id, pathNodeIds],
+    queryFn: () => {
+      if (!selectedFamily?.id || pathNodeIds.length === 0) {
+        return Promise.resolve({ found: false });
+      }
+      return getKMATReference(selectedFamily.id, pathNodeIds);
+    },
+    // KMAT ist für ALLE sichtbar, nicht nur Admins
+    enabled: !!selectedFamily?.id && !!typecode && pathNodeIds.length > 0,
+    staleTime: 10000,
+  });
+
+  // KMAT Reference Mutation - Save/Update KMAT
+  const saveKMATMutation = useMutation({
+    mutationFn: saveKMATReference,
+    onSuccess: (data) => {
+      setShowKMATModal(false);
+      setKMATInput('');
+      // Invalidate KMAT query mit spezifischen Parametern UND generell
+      queryClient.invalidateQueries({ 
+        queryKey: ['kmat-reference', selectedFamily?.id, pathNodeIds] 
+      });
+      queryClient.invalidateQueries({ queryKey: ['kmat-reference'] });
+      // Force refetch nach kurzem Timeout
+      setTimeout(() => {
+        kmatQuery.refetch();
+      }, 100);
+    },
+    onError: (error: any) => {
+      console.error('Fehler beim Speichern der KMAT Referenz:', error);
+    },
+  });
+
+  // KMAT Reference Delete Mutation
+  const deleteKMATMutation = useMutation({
+    mutationFn: deleteKMATReference,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['kmat-reference'] });
+    },
+    onError: (error: any) => {
+      console.error('Fehler beim Löschen der KMAT Referenz:', error);
+    },
+  });
+
+  // Mutation: Create Successor Relationship (Bulk)
+  const createSuccessorMutation = useMutation({
+    mutationFn: createSuccessorBulk,
+    onSuccess: (data) => {
+      console.log('Nachfolger erstellt:', data);
+      setIsSuccessorSelectionMode(false);
+      setSourceSelectionForSuccessor(null);
+      // Reset selections to start fresh
+      setSelections({});
+      
+      // Invalidate queries to refresh UI
+      queryClient.invalidateQueries({ queryKey: ['product-successor'] });
+      queryClient.invalidateQueries({ queryKey: ['children'] });
+      queryClient.invalidateQueries({ queryKey: ['options'] });
+    },
+    onError: (error: any) => {
+      console.error('Fehler beim Erstellen der Nachfolger-Verlinkung:', error);
+    },
+  });
+
+  // Mutation: Create Family
+  const createFamilyMutation = useMutation({
+    mutationFn: createFamily,
+    onSuccess: (data) => {
+      setShowCreateFamilyModal(false);
+      setFamilyFormData({ code: '', label: null, label_en: null });
+      // Invalidate families query to refresh dropdown
+      queryClient.invalidateQueries({ queryKey: ['families'] });
+      queryClient.invalidateQueries({ queryKey: ['product-families'] });
+      queryClient.invalidateQueries({ queryKey: ['options'] });
+    },
+    onError: (error: any) => {
+      console.error('Fehler beim Erstellen der Produktfamilie:', error);
+    },
+  });
+
+  const updateFamilyMutation = useMutation({
+    mutationFn: ({ code, data }: { code: string; data: UpdateFamilyRequest }) => 
+      updateFamily(code, data),
+    onSuccess: (data) => {
+      setShowEditFamilyModal(false);
+      setEditingFamily(null);
+      // Invalidate families query to refresh dropdown
+      queryClient.invalidateQueries({ queryKey: ['families'] });
+      queryClient.invalidateQueries({ queryKey: ['product-families'] });
+      queryClient.invalidateQueries({ queryKey: ['options'] });
+    },
+    onError: (error: any) => {
+      console.error('Fehler beim Aktualisieren der Produktfamilie:', error);
+    },
+  });
+
+  const deleteFamilyMutation = useMutation({
+    mutationFn: (familyCode: string) => deleteFamily(familyCode),
+    onSuccess: (data) => {
+      setShowDeleteFamilyModal(false);
+      setDeletingFamily(null);
+      setDeletePreview(null);
+      // Clear selection if deleted family was selected
+      if (selectedFamily?.code === data.code) {
+        setSelectedFamily(null);
+        setSelections({});
+      }
+      // Invalidate families query to refresh dropdown
+      queryClient.invalidateQueries({ queryKey: ['families'] });
+      queryClient.invalidateQueries({ queryKey: ['product-families'] });
+      queryClient.invalidateQueries({ queryKey: ['options'] });
+    },
+    onError: (error: any) => {
+      console.error('Fehler beim Löschen der Produktfamilie:', error);
+    },
+  });
+
+  const deleteNodeMutation = useMutation({
+    mutationFn: (nodeId: number) => deleteNode(nodeId),
+    onSuccess: (data) => {
+      setShowDeleteNodeModal(false);
+      setDeletingNode(null);
+      setDeleteNodePreview(null);
+      
+      // Clear selection if deleted node was selected
+      if (selections[data.level]?.id === data.node_id) {
+        const newSelections = { ...selections };
+        // Remove this level and all higher levels
+        for (let i = data.level; i <= 20; i++) {
+          delete newSelections[i];
+        }
+        setSelections(newSelections);
+      }
+      
+      // Invalidate level queries to refresh options
+      queryClient.invalidateQueries({ queryKey: ['children', data.level] });
+      queryClient.invalidateQueries({ queryKey: ['options'] });
+      // Invalidate parent level too (in case deleted node was in dropdown)
+      if (data.level > 1) {
+        queryClient.invalidateQueries({ queryKey: ['children', data.level - 1] });
+      }
+      for (let i = data.level; i <= 20; i++) {
+        queryClient.invalidateQueries({ queryKey: ['level-options', i] });
+      }
+    },
+    onError: (error: any) => {
+      console.error('Fehler beim Löschen des Nodes:', error);
+    },
   });
 
   /**
@@ -5157,12 +5633,12 @@ const VariantenbaumConfigurator: React.FC = () => {
                 </button>
               )}
               {user?.role === 'admin' && (
-                <a
-                  href="/admin"
+                <Link
+                  to="/admin"
                   className="px-3 py-1.5 text-sm bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-all font-medium shadow-sm hover:shadow-md"
                 >
                   Admin Panel
-                </a>
+                </Link>
               )}
               <button
                 onClick={() => setShowChangePasswordModal(true)}
@@ -5180,6 +5656,169 @@ const VariantenbaumConfigurator: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Sticky Product Code Banner - Nur anzeigen wenn Familie und mindestens eine Auswahl */}
+      {selectedFamily && (
+        <div className="sticky top-0 z-30 bg-gradient-to-r from-green-500 to-green-600 shadow-lg border-b-2 border-green-700">
+          <div className="max-w-7xl mx-auto px-6 py-4">
+            <div className="space-y-3">
+              {/* Produktschlüssel - erste Zeile */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="text-white font-semibold text-sm">Aktueller Produktschlüssel:</span>
+                <div className="flex items-center gap-1 bg-white/20 backdrop-blur-sm rounded-lg px-3 py-1.5">
+                  {/* Familie */}
+                  <div className="relative">
+                    <span 
+                      className="font-mono font-bold text-white text-lg cursor-pointer hover:text-green-100 transition-colors"
+                      onMouseEnter={() => setHoveredTooltip({type: 'family', data: selectedFamily})}
+                      onMouseLeave={() => setHoveredTooltip(null)}
+                      onClick={() => {
+                        // Familie hat keine AvailableOption, nur Node-Daten
+                        setBannerDetailSelection({ 
+                          level: 0, 
+                          option: {
+                            id: selectedFamily.id,
+                            code: selectedFamily.code ?? '',
+                            label: selectedFamily.label || null,
+                            label_en: selectedFamily.label_en || null,
+                            name: null,
+                            level: 0,
+                            position: 0,
+                            is_compatible: true,
+                            pictures: [],
+                            links: []
+                          }
+                        });
+                        setShowBannerDetailModal(true);
+                      }}
+                    >
+                      {selectedFamily.code}
+                    </span>
+                  </div>
+                  
+                  {/* Level Codes mit Wildcards */}
+                  {(() => {
+                    const maxLevel = Math.max(...Object.keys(selections).map(Number));
+                    const segments = [];
+                    
+                    for (let i = 1; i <= maxLevel; i++) {
+                      const selection = selections[i];
+                      const displaySelection = pathSpecificSelections[i] || selection;
+                      
+                      segments.push(
+                        <React.Fragment key={i}>
+                          <span className="text-white/60 font-bold">-</span>
+                          {selection ? (
+                            <div className="relative">
+                              <span 
+                                className="font-mono font-bold text-white text-lg cursor-pointer hover:text-green-100 transition-colors"
+                                onMouseEnter={() => setHoveredTooltip({type: 'code', level: i, data: {selection, displaySelection}})}
+                                onMouseLeave={() => setHoveredTooltip(null)}
+                                onClick={() => {
+                                  setBannerDetailSelection({ level: i, option: selection });
+                                  setShowBannerDetailModal(true);
+                                }}
+                              >
+                                {selection.code}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="font-mono font-bold text-white/40 text-lg">*</span>
+                          )}
+                        </React.Fragment>
+                      );
+                    }
+                    
+                    return segments;
+                  })()}
+                </div>
+              </div>
+              
+              {/* Produktfamilie (Group Name) - zweite Zeile falls abgeleitet oder von decode */}
+              {(resultDecodeQuery.data?.group_name || (derivedGroupNameData?.is_unique && derivedGroupNameData?.group_name)) && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-white/90 font-medium text-xs">Produktfamilie:</span>
+                  <span className="bg-white/30 backdrop-blur-sm text-white font-semibold text-sm px-3 py-1 rounded-md">
+                    {resultDecodeQuery.data?.group_name || derivedGroupNameData?.group_name}
+                  </span>
+                  {!resultDecodeQuery.data?.group_name && derivedGroupNameData?.is_unique && (
+                    <span className="text-white/70 text-xs italic">
+                      (abgeleitet)
+                    </span>
+                  )}
+                </div>
+              )}
+              
+              {/* Mehrere mögliche Group Names - dritte Zeile */}
+              {!resultDecodeQuery.data?.group_name && derivedGroupNameData && !derivedGroupNameData.is_unique && derivedGroupNameData.possible_group_names.length > 0 && (
+                <div className="flex flex-col gap-2">
+                  <span className="text-white/90 font-medium text-xs">Mögliche Produktfamilien:</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {/* Zeige nur die ersten 4 */}
+                    {derivedGroupNameData.possible_group_names.slice(0, 4).map((name, idx) => (
+                      <span key={idx} className="bg-yellow-400/30 backdrop-blur-sm text-white text-xs font-medium px-2 py-0.5 rounded">
+                        {name}
+                      </span>
+                    ))}
+                    {/* Falls mehr als 4, zeige "und X weitere" mit Tooltip */}
+                    {derivedGroupNameData.possible_group_names.length > 4 && (
+                      <div className="relative">
+                        <span 
+                          className="bg-yellow-500/40 backdrop-blur-sm text-white text-xs font-medium px-2 py-0.5 rounded cursor-help"
+                          onMouseEnter={() => setHoveredTooltip({type: 'more', data: derivedGroupNameData.possible_group_names})}
+                          onMouseLeave={() => setHoveredTooltip(null)}
+                        >
+                          und {derivedGroupNameData.possible_group_names.length - 4} weitere
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              
+              {/* Letzte Zeile: KMAT (falls vorhanden) + Schema & Details Buttons */}
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                {/* KMAT falls vollständiges Produkt */}
+                {resultDecodeQuery.data?.is_complete_product && kmatQuery.data?.found && 'kmat_reference' in kmatQuery.data && kmatQuery.data.kmat_reference ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-white/90 font-medium text-xs">KMAT:</span>
+                    <span className="bg-blue-400/30 backdrop-blur-sm text-white font-mono text-sm font-semibold px-3 py-1 rounded-md">
+                      {String(kmatQuery.data.kmat_reference)}
+                    </span>
+                  </div>
+                ) : (
+                  <div></div>
+                )}
+                {/* Schema & Details Buttons rechts */}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={async () => {
+                      try {
+                        const data = await getFamilySchemaVisualization(selectedFamily.code!);
+                        setSchemaVisualizationData(data);
+                        setShowSchemaVisualization(true);
+                      } catch (error) {
+                        console.error('Fehler beim Laden der Schema-Visualisierung:', error);
+                      }
+                    }}
+                    className="text-white hover:text-blue-200 text-xs font-medium flex items-center gap-1 transition-colors"
+                  >
+                    📊 Schema
+                  </button>
+                  <button
+                    onClick={() => {
+                      document.getElementById('result-section')?.scrollIntoView({ behavior: 'smooth' });
+                    }}
+                    className="text-white hover:text-green-100 text-xs font-medium flex items-center gap-1 transition-colors"
+                  >
+                    Details ↓
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main Content Area - Scrollable */}
       <div className="flex-1 overflow-y-auto">
@@ -5250,12 +5889,56 @@ const VariantenbaumConfigurator: React.FC = () => {
                   .map((family) => (
                     <div
                       key={family.code}
-                      className={`px-4 py-2.5 cursor-pointer hover:bg-blue-50 text-gray-900 rounded ${
+                      className={`flex items-center justify-between gap-2 px-4 py-2.5 hover:bg-blue-50 text-gray-900 rounded ${
                         selectedFamily?.code === family.code ? 'bg-blue-100' : ''
                       }`}
-                      onClick={() => handleFamilyChange(family)}
                     >
-                      {family.code}
+                      <div
+                        className="flex-1 cursor-pointer"
+                        onClick={() => handleFamilyChange(family)}
+                      >
+                        <span className="font-mono font-semibold">{family.code}</span>
+                        {family.label && (
+                          <span className="ml-2 text-sm text-gray-600">{family.label}</span>
+                        )}
+                      </div>
+                      {user?.role === 'admin' && (
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingFamily(family);
+                              setShowEditFamilyModal(true);
+                            }}
+                            className="flex-shrink-0 p-1.5 text-blue-600 hover:bg-blue-100 rounded-full transition-colors"
+                            title="Labels bearbeiten"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              setDeletingFamily(family);
+                              // Fetch preview
+                              try {
+                                const preview = await previewFamilyDeletion(family.code!);
+                                setDeletePreview(preview);
+                                setShowDeleteFamilyModal(true);
+                              } catch (error: any) {
+                                console.error('Fehler beim Laden der Vorschau:', error);
+                              }
+                            }}
+                            className="flex-shrink-0 p-1.5 text-red-600 hover:bg-red-100 rounded-full transition-colors"
+                            title="Produktfamilie löschen"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))}
                   
@@ -5270,6 +5953,23 @@ const VariantenbaumConfigurator: React.FC = () => {
                   </div>
                 )}
               </div>
+
+              {/* Admin: Create Family Button */}
+              {user?.role === 'admin' && (
+                <div className="p-3 border-t border-gray-200 bg-gray-50 rounded-b-lg">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowCreateFamilyModal(true);
+                      setIsFamilyDropdownOpen(false);
+                    }}
+                    className="w-full px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors font-medium text-sm flex items-center justify-center gap-2"
+                  >
+                    <span className="text-lg">+</span>
+                    <span>Create New Family</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -5361,19 +6061,84 @@ const VariantenbaumConfigurator: React.FC = () => {
 
       {/* Result */}
       {selectedFamily && Object.keys(selections).length > 0 && (
-        <div className="bg-green-50 border border-green-200 rounded-lg p-6">
+        <div id="result-section" className="bg-green-50 border border-green-200 rounded-lg p-6">
           <div className="space-y-4">
             {/* Typcode */}
             <div className="bg-white border border-green-300 rounded-lg p-4">
               <span className="font-medium text-green-700">Typcode: </span>
-              <span className="ml-2 font-mono text-lg text-green-800">{typecode}</span>
+              <span className="ml-2 font-mono text-lg text-green-800">{displayTypecode}</span>
             </div>
 
-            {/* Group Name (Produktfamilie) - von decode result */}
-            {resultDecodeQuery.data?.group_name && (
+            {/* KMAT Reference (Admin only, vollständiges Produkt) */}
+            {user?.role === 'admin' && typecode && resultDecodeQuery.data?.is_complete_product && (
+              <div className="bg-white border border-blue-300 rounded-lg p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="font-medium text-blue-700">KMAT Referenz:</span>
+                    {kmatQuery.data?.found && 'kmat_reference' in kmatQuery.data && kmatQuery.data.kmat_reference ? (
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-blue-800 bg-blue-50 px-3 py-1 rounded">
+                          {String(kmatQuery.data.kmat_reference)}
+                        </span>
+                        <button
+                          onClick={() => {
+                            if (kmatQuery.data && 'id' in kmatQuery.data && kmatQuery.data.id && confirm('KMAT Referenz wirklich löschen?')) {
+                              deleteKMATMutation.mutate(Number(kmatQuery.data.id));
+                            }
+                          }}
+                          className="text-sm text-red-600 hover:text-red-700 px-2 py-1 hover:bg-red-50 rounded transition-colors"
+                          disabled={deleteKMATMutation.isPending}
+                        >
+                          🗑️ Löschen
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-gray-500 italic">Nicht gesetzt</span>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => {
+                      setKMATInput((kmatQuery.data && 'kmat_reference' in kmatQuery.data && kmatQuery.data.kmat_reference) ? String(kmatQuery.data.kmat_reference) : '');
+                      setShowKMATModal(true);
+                    }}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                  >
+                    {kmatQuery.data?.found ? '✏️ Bearbeiten' : '➕ Hinzufügen'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Group Name (Produktfamilie) - von decode result ODER abgeleitet */}
+            {(resultDecodeQuery.data?.group_name || (derivedGroupNameData?.is_unique && derivedGroupNameData?.group_name)) && (
               <div className="bg-white border border-green-300 rounded-lg p-4">
                 <span className="font-medium text-green-700">Produktfamilie: </span>
-                <span className="ml-2 text-green-800">{resultDecodeQuery.data.group_name}</span>
+                <span className="ml-2 text-green-800">
+                  {resultDecodeQuery.data?.group_name || derivedGroupNameData?.group_name}
+                </span>
+                {/* Zeige Hinweis wenn abgeleitet und nicht vollständig */}
+                {!resultDecodeQuery.data?.group_name && derivedGroupNameData?.is_unique && (
+                  <span className="ml-3 text-sm text-gray-500 italic">
+                    (wird durch Ihre Auswahlen eindeutig festgelegt)
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Mögliche Group Names (falls mehrere) */}
+            {!resultDecodeQuery.data?.group_name && derivedGroupNameData && !derivedGroupNameData.is_unique && derivedGroupNameData.possible_group_names.length > 0 && (
+              <div className="bg-white border border-yellow-300 rounded-lg p-4">
+                <span className="font-medium text-yellow-700">Mögliche Produktfamilien: </span>
+                <div className="mt-2 flex flex-wrap gap-2 max-w-4xl">
+                  {derivedGroupNameData.possible_group_names.map((name, idx) => (
+                    <span key={idx} className="bg-yellow-100 text-yellow-800 text-sm font-medium px-3 py-1 rounded whitespace-nowrap">
+                      {name}
+                    </span>
+                  ))}
+                </div>
+                <span className="text-sm text-gray-500 italic mt-2 block">
+                  Wählen Sie weitere Optionen, um die Produktfamilie eindeutig festzulegen
+                </span>
               </div>
             )}
 
@@ -5502,6 +6267,226 @@ const VariantenbaumConfigurator: React.FC = () => {
                   );
                 })}
             </div>
+
+            {/* Product Successor Warning - Phase 1 */}
+            {productSuccessorQuery.data?.has_successor && (
+              <SuccessorWarning
+                successor={productSuccessorQuery.data}
+                onSwitchToNew={() => {
+                  // Navigate to new product
+                  if (productSuccessorQuery.data.target_full_code) {
+                    // Decode new product and auto-configure
+                    decodeTypecode(productSuccessorQuery.data.target_full_code).then(result => {
+                      if (result.exists && result.path_segments && result.path_segments.length > 0) {
+                        // Reset current configuration
+                        setSelections({});
+                        setSelectedFamily(null);
+                        setSelectedGroupFilter(null);
+                        
+                        // Set new family from first segment
+                        const familySegment = result.path_segments[0];
+                        if (familySegment && familySegment.code) {
+                          // Find family in the list
+                          fetchProductFamilies().then(families => {
+                            const newFamily = families.find(f => f.code === familySegment.code);
+                            if (newFamily) {
+                              setSelectedFamily(newFamily);
+                              
+                              // Set all other selections
+                              const newSelections: Record<number, AvailableOption> = {};
+                              result.path_segments.slice(1).forEach(segment => {
+                                if (segment.code) {
+                                  newSelections[segment.level] = {
+                                    id: 0, // ID will be resolved by React Query
+                                    code: segment.code,
+                                    label: segment.label || '',
+                                    label_en: segment.label_en || null,
+                                    name: segment.name || '',
+                                    position: segment.position_start || 0,
+                                    ids: [],
+                                    pictures: segment.pictures || [],
+                                    links: segment.links || [],
+                                    level: segment.level,
+                                    is_compatible: true,
+                                  };
+                                }
+                              });
+                              setSelections(newSelections);
+                              
+                              // Scroll to top
+                              window.scrollTo({ top: 0, behavior: 'smooth' });
+                            }
+                          });
+                        }
+                      }
+                    });
+                  }
+                }}
+                onContinueWithOld={() => {
+                  // Just dismiss - user continues with old product
+                  // The warning will re-appear on next page load
+                  console.log('User continues with deprecated product');
+                }}
+              />
+            )}
+
+            {/* Admin: Add Successor Button */}
+            {user?.role === 'admin' && !isSuccessorSelectionMode && (selectedFamily || Object.keys(selections).length > 0) && (
+              <div className="mt-4 p-4 bg-orange-50 border border-orange-200 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="font-semibold text-orange-900">🔗 Nachfolger-Verwaltung (Admin)</div>
+                    <div className="text-sm text-orange-700 mt-1">
+                      Füge eine Nachfolger-Verlinkung für {typecode ? 'dieses Produkt' : 'diesen Node'} hinzu
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      // Get the FILTERED node IDs from query results, not from stored selections!
+                      // The levelQueries contain the already-filtered options based on all other selections.
+                      
+                      let sourceNodeIds: number[];
+                      let sourceCode: string;
+                      let sourceLabel: string;
+                      
+                      // Find the LAST (highest) selected level
+                      const selectedLevels = Object.keys(selections).map(Number).sort((a, b) => b - a);
+                      
+                      if (selectedLevels.length === 0) {
+                        // Only family selected
+                        if (!selectedFamily?.id) {
+                          console.error('Keine Node ID verfügbar');
+                          return;
+                        }
+                        sourceNodeIds = [selectedFamily.id];
+                        sourceCode = selectedFamily.code || '';
+                        sourceLabel = selectedFamily.label || '';
+                      } else {
+                        // Get the highest level selection
+                        const highestLevel = selectedLevels[0];
+                        const selectedOption = selections[highestLevel];
+                        
+                        // Find this option in the QUERY RESULTS to get filtered IDs
+                        const queryResult = levelQueries[highestLevel];
+                        if (!queryResult?.data) {
+                          console.error('Query Daten nicht verfügbar');
+                          return;
+                        }
+                        
+                        // Find the option that matches the selected code
+                        const filteredOption = queryResult.data.find(opt => opt.code === selectedOption.code);
+                        if (!filteredOption || !filteredOption.ids || filteredOption.ids.length === 0) {
+                          console.error('Keine gefilterten Node IDs gefunden');
+                          return;
+                        }
+                        
+                        sourceNodeIds = filteredOption.ids;
+                        sourceCode = filteredOption.code;
+                        sourceLabel = filteredOption.label || filteredOption.code;
+                      }
+                      
+                      setSourceSelectionForSuccessor({
+                        nodeIds: sourceNodeIds,
+                        code: sourceCode,
+                        label: sourceLabel,
+                      });
+                      
+                      setIsSuccessorSelectionMode(true);
+                      
+                      // Reset current selection to allow user to pick successor
+                      setSelections({});
+                      setSelectedFamily(null);
+                      
+                      // Nachfolger-Auswahlmodus aktiviert (siehe blauen Banner)
+                    }}
+                    className="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg font-medium"
+                  >
+                    + Nachfolger hinzufügen
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Admin: Successor Selection Mode Active */}
+            {user?.role === 'admin' && isSuccessorSelectionMode && sourceSelectionForSuccessor && (
+              <div className="mt-4 p-4 bg-blue-50 border-2 border-blue-500 rounded-lg">
+                <div className="font-semibold text-blue-900 mb-2">🎯 Nachfolger-Auswahl aktiv</div>
+                <div className="text-sm text-blue-700 mb-3">
+                  <strong>Quelle:</strong> {sourceSelectionForSuccessor.label} ({sourceSelectionForSuccessor.code})
+                </div>
+                <div className="text-sm text-blue-700 mb-3">
+                  Wähle jetzt den Nachfolger aus dem Produktbaum. Wenn du fertig bist, klicke auf "Verlinkung erstellen".
+                </div>
+                
+                {(selectedFamily || Object.keys(selections).length > 0) && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        // Get FILTERED target node IDs from query results
+                        let targetNodeIds: number[];
+                        
+                        // Find the LAST (highest) selected level
+                        const selectedLevels = Object.keys(selections).map(Number).sort((a, b) => b - a);
+                        
+                        if (selectedLevels.length === 0) {
+                          // Only family selected
+                          if (!selectedFamily?.id) {
+                            console.error('Bitte erst Nachfolger auswählen');
+                            return;
+                          }
+                          targetNodeIds = [selectedFamily.id];
+                        } else {
+                          // Get the highest level selection
+                          const highestLevel = selectedLevels[0];
+                          const selectedOption = selections[highestLevel];
+                          
+                          // Find this option in the QUERY RESULTS to get filtered IDs
+                          const queryResult = levelQueries[highestLevel];
+                          if (!queryResult?.data) {
+                            console.error('Query Daten nicht verfügbar');
+                            return;
+                          }
+                          
+                          // Find the option that matches the selected code
+                          const filteredOption = queryResult.data.find(opt => opt.code === selectedOption.code);
+                          if (!filteredOption || !filteredOption.ids || filteredOption.ids.length === 0) {
+                            console.error('Keine gefilterten Node IDs gefunden');
+                            return;
+                          }
+                          
+                          targetNodeIds = filteredOption.ids;
+                        }
+                        
+                        if (!sourceSelectionForSuccessor?.nodeIds || sourceSelectionForSuccessor.nodeIds.length === 0) {
+                          console.error('Source Node IDs fehlen');
+                          return;
+                        }
+                        
+                        createSuccessorMutation.mutate({
+                          source_node_ids: sourceSelectionForSuccessor.nodeIds,
+                          target_node_ids: targetNodeIds,
+                          migration_note: `Nachfolger von ${sourceSelectionForSuccessor.label}`,
+                        });
+                      }}
+                      disabled={createSuccessorMutation.isPending}
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium disabled:opacity-50"
+                    >
+                      {createSuccessorMutation.isPending ? 'Wird erstellt...' : '✓ Verlinkung erstellen'}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsSuccessorSelectionMode(false);
+                        setSourceSelectionForSuccessor(null);
+                        setSelections({});
+                      }}
+                      className="px-4 py-2 bg-gray-300 hover:bg-gray-400 text-gray-700 rounded-lg font-medium"
+                    >
+                      ✕ Abbrechen
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -5520,6 +6505,182 @@ const VariantenbaumConfigurator: React.FC = () => {
           links={resultLinksModalLinks}
           onClose={() => setShowResultLinksModal(false)}
         />
+      )}
+
+      {/* Banner Code Detail Modal */}
+      {showBannerDetailModal && bannerDetailSelection && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
+            {/* Header */}
+            <div className="sticky top-0 bg-gradient-to-r from-green-500 to-green-600 text-white px-6 py-4 flex justify-between items-center rounded-t-lg">
+              <div>
+                <h2 className="text-xl font-bold">
+                  Code Details - Level {bannerDetailSelection.level}
+                </h2>
+                <div className="font-mono text-2xl font-bold mt-1">
+                  {bannerDetailSelection.option.code}
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowBannerDetailModal(false);
+                  setBannerDetailSelection(null);
+                }}
+                className="text-white hover:text-gray-200 transition-colors"
+                aria-label="Close"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-6 space-y-6">
+              {/* Name */}
+              {bannerDetailSelection.option.name && (
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-700 mb-2">Name</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {bannerDetailSelection.option.name.split(',').map((name, idx) => (
+                      <span
+                        key={idx}
+                        className="bg-purple-100 text-purple-800 text-sm font-medium px-3 py-1 rounded"
+                      >
+                        {name.trim()}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Labels */}
+              {(bannerDetailSelection.option.label || bannerDetailSelection.option.label_en) && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {bannerDetailSelection.option.label && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-700 mb-2">Label (DE)</h3>
+                      <div className="bg-gray-50 p-3 rounded whitespace-pre-line text-sm">
+                        {bannerDetailSelection.option.label}
+                      </div>
+                    </div>
+                  )}
+                  {bannerDetailSelection.option.label_en && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-700 mb-2">Label (EN)</h3>
+                      <div className="bg-gray-50 p-3 rounded whitespace-pre-line text-sm">
+                        {bannerDetailSelection.option.label_en}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Pictures */}
+              {bannerDetailSelection.option.pictures && bannerDetailSelection.option.pictures.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-700 mb-2">
+                    Bilder ({bannerDetailSelection.option.pictures.length})
+                  </h3>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    {bannerDetailSelection.option.pictures.map((pic, idx) => (
+                      <div
+                        key={idx}
+                        className="relative aspect-square bg-gray-100 rounded overflow-hidden cursor-pointer hover:opacity-80 transition-opacity"
+                        onClick={() => {
+                          setResultImageModalPictures(bannerDetailSelection.option.pictures || []);
+                          setShowResultImageModal(true);
+                        }}
+                      >
+                        <img
+                          src={`http://localhost:8000${pic.url}`}
+                          alt={pic.description || 'Product image'}
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Links */}
+              {bannerDetailSelection.option.links && bannerDetailSelection.option.links.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-700 mb-2">
+                    Links ({bannerDetailSelection.option.links.length})
+                  </h3>
+                  <div className="space-y-2">
+                    {bannerDetailSelection.option.links.map((link, idx) => (
+                      <a
+                        key={idx}
+                        href={link.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block p-3 bg-blue-50 hover:bg-blue-100 rounded transition-colors"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div>
+                            {link.description && (
+                              <div className="font-medium text-blue-900">{link.description}</div>
+                            )}
+                            <div className="text-sm text-blue-600 truncate">{link.url}</div>
+                          </div>
+                          <svg className="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                          </svg>
+                        </div>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* No additional data message */}
+              {!bannerDetailSelection.option.name && 
+               !bannerDetailSelection.option.label && 
+               !bannerDetailSelection.option.label_en &&
+               (!bannerDetailSelection.option.pictures || bannerDetailSelection.option.pictures.length === 0) &&
+               (!bannerDetailSelection.option.links || bannerDetailSelection.option.links.length === 0) && (
+                <div className="text-center py-8 text-gray-500">
+                  Keine zusätzlichen Informationen verfügbar
+                </div>
+              )}
+
+              {/* Admin: Delete Node Button */}
+              {user?.role === 'admin' && bannerDetailSelection.level > 0 && bannerDetailSelection.option.id && (
+                <div className="border-t border-gray-200 pt-6">
+                  <button
+                    onClick={async () => {
+                      const nodeId = bannerDetailSelection.option.id!;
+                      const nodeCode = bannerDetailSelection.option.code;
+                      const nodeLevel = bannerDetailSelection.level;
+                      
+                      setDeletingNode({ id: nodeId, code: nodeCode, level: nodeLevel });
+                      
+                      try {
+                        const preview = await previewNodeDeletion(nodeId);
+                        setDeleteNodePreview(preview);
+                        setShowDeleteNodeModal(true);
+                        setShowBannerDetailModal(false); // Close detail modal
+                      } catch (error: any) {
+                        console.error('Fehler beim Laden der Vorschau:', error);
+                      }
+                    }}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-medium"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    Node löschen (Level {bannerDetailSelection.level})
+                  </button>
+                  <p className="text-xs text-gray-500 mt-2 text-center">
+                    Löscht diesen Node und alle Descendants
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
         </div> {/* Close content container */}
@@ -5548,6 +6709,555 @@ const VariantenbaumConfigurator: React.FC = () => {
           isOpen={showChangePasswordModal}
           onClose={() => setShowChangePasswordModal(false)}
         />
+
+        {/* Create Family Modal */}
+        {showCreateFamilyModal && createPortal(
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+              <h2 className="text-2xl font-bold text-gray-900 mb-6">Create Product Family</h2>
+              
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                if (!familyFormData.code.trim()) {
+                  return;
+                }
+                createFamilyMutation.mutate(familyFormData);
+              }}>
+                {/* Code */}
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Code <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={familyFormData.code}
+                    onChange={(e) => setFamilyFormData({ ...familyFormData, code: e.target.value.toUpperCase() })}
+                    placeholder="z.B. XYZ"
+                    required
+                    disabled={createFamilyMutation.isPending}
+                    className="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all disabled:bg-gray-100"
+                  />
+                </div>
+
+                {/* Label (DE) */}
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Label (Deutsch)
+                  </label>
+                  <input
+                    type="text"
+                    value={familyFormData.label || ''}
+                    onChange={(e) => setFamilyFormData({ ...familyFormData, label: e.target.value || null })}
+                    placeholder="Optional - z.B. Neue Produktlinie"
+                    disabled={createFamilyMutation.isPending}
+                    className="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all disabled:bg-gray-100"
+                  />
+                </div>
+
+                {/* Label (EN) */}
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Label (English)
+                  </label>
+                  <input
+                    type="text"
+                    value={familyFormData.label_en || ''}
+                    onChange={(e) => setFamilyFormData({ ...familyFormData, label_en: e.target.value || null })}
+                    placeholder="z.B. New Product Line"
+                    disabled={createFamilyMutation.isPending}
+                    className="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all disabled:bg-gray-100"
+                  />
+                </div>
+
+                {/* Actions */}
+                <div className="flex gap-3 pt-2">
+                  <button
+                    type="submit"
+                    disabled={createFamilyMutation.isPending}
+                    className="flex-1 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors font-medium disabled:bg-gray-400 disabled:cursor-not-allowed"
+                  >
+                    {createFamilyMutation.isPending ? 'Creating...' : 'Create Family'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateFamilyModal(false)}
+                    disabled={createFamilyMutation.isPending}
+                    className="px-6 py-2.5 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-medium disabled:cursor-not-allowed"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {/* Edit Family Modal */}
+        {showEditFamilyModal && editingFamily && createPortal(
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+              <h2 className="text-2xl font-bold text-gray-900 mb-6">
+                Edit Family Labels: <span className="font-mono text-purple-600">{editingFamily.code}</span>
+              </h2>
+              
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                if (!editFamilyFormData.label.trim()) {
+                  return;
+                }
+                updateFamilyMutation.mutate({
+                  code: editingFamily.code!,
+                  data: editFamilyFormData
+                });
+              }}>
+                {/* Label (DE) */}
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Label (Deutsch) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={editFamilyFormData.label}
+                    onChange={(e) => setEditFamilyFormData({ ...editFamilyFormData, label: e.target.value })}
+                    placeholder="z.B. Neue Produktlinie"
+                    required
+                    disabled={updateFamilyMutation.isPending}
+                    className="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all disabled:bg-gray-100"
+                    onFocus={(e) => e.target.select()}
+                  />
+                </div>
+
+                {/* Label (EN) */}
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Label (English)
+                  </label>
+                  <input
+                    type="text"
+                    value={editFamilyFormData.label_en || ''}
+                    onChange={(e) => setEditFamilyFormData({ ...editFamilyFormData, label_en: e.target.value || null })}
+                    placeholder="z.B. New Product Line"
+                    disabled={updateFamilyMutation.isPending}
+                    className="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all disabled:bg-gray-100"
+                  />
+                </div>
+
+                {/* Actions */}
+                <div className="flex gap-3 pt-2">
+                  <button
+                    type="submit"
+                    disabled={updateFamilyMutation.isPending}
+                    className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium disabled:bg-gray-400 disabled:cursor-not-allowed"
+                  >
+                    {updateFamilyMutation.isPending ? 'Saving...' : 'Save Changes'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowEditFamilyModal(false);
+                      setEditingFamily(null);
+                    }}
+                    disabled={updateFamilyMutation.isPending}
+                    className="px-6 py-2.5 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-medium disabled:cursor-not-allowed"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {/* Delete Family Confirmation Modal */}
+        {showDeleteFamilyModal && deletingFamily && deletePreview && createPortal(
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-lg shadow-xl max-w-lg w-full p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-3 bg-red-100 rounded-full">
+                  <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-900">Produktfamilie löschen?</h2>
+                  <p className="text-sm text-gray-600">Diese Aktion kann nicht rückgängig gemacht werden!</p>
+                </div>
+              </div>
+              
+              {/* Familie Info */}
+              <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="font-mono font-bold text-lg text-red-700">{deletePreview.code}</span>
+                  {deletePreview.label && (
+                    <span className="text-gray-600">— {deletePreview.label}</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Auswirkungen */}
+              <div className="mb-6 space-y-3">
+                <h3 className="font-semibold text-gray-900">Folgende Daten werden gelöscht:</h3>
+                
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 p-3 bg-red-50 rounded-lg border border-red-200">
+                    <svg className="w-5 h-5 text-red-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span className="text-red-900 font-semibold">
+                      {deletePreview.affected_nodes} Nodes (gesamter Produktbaum)
+                    </span>
+                  </div>
+
+                  {deletePreview.affected_successors > 0 && (
+                    <div className="flex items-center gap-2 p-3 bg-orange-50 rounded-lg border border-orange-200">
+                      <svg className="w-5 h-5 text-orange-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                      <span className="text-orange-900">
+                        {deletePreview.affected_successors} Nachfolger-Beziehungen
+                      </span>
+                    </div>
+                  )}
+
+                  {deletePreview.affected_constraints > 0 && (
+                    <div className="flex items-center gap-2 p-3 bg-yellow-50 rounded-lg border border-yellow-200">
+                      <svg className="w-5 h-5 text-yellow-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <span className="text-yellow-900">
+                        {deletePreview.affected_constraints} Constraint-Kombinationen
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    if (deletingFamily.code) {
+                      deleteFamilyMutation.mutate(deletingFamily.code);
+                    }
+                  }}
+                  disabled={deleteFamilyMutation.isPending}
+                  className="flex-1 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-semibold disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                  {deleteFamilyMutation.isPending ? 'Wird gelöscht...' : 'Endgültig löschen'}
+                </button>
+                <button
+                  onClick={() => {
+                    setShowDeleteFamilyModal(false);
+                    setDeletingFamily(null);
+                    setDeletePreview(null);
+                  }}
+                  disabled={deleteFamilyMutation.isPending}
+                  className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-semibold disabled:cursor-not-allowed"
+                >
+                  Abbrechen
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {/* Delete Node Confirmation Modal */}
+        {showDeleteNodeModal && deletingNode && deleteNodePreview && createPortal(
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-lg shadow-xl max-w-lg w-full p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-3 bg-red-100 rounded-full">
+                  <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-900">Node löschen?</h2>
+                  <p className="text-sm text-gray-600">Diese Aktion kann nicht rückgängig gemacht werden!</p>
+                </div>
+              </div>
+              
+              {/* Node Info */}
+              <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="bg-blue-100 text-blue-800 text-sm font-medium px-3 py-1 rounded">
+                    Level {deleteNodePreview.level}
+                  </span>
+                  <span className="font-mono font-bold text-lg text-red-700">{deleteNodePreview.code}</span>
+                </div>
+                {deleteNodePreview.label && (
+                  <div className="text-gray-600 text-sm mt-2">{deleteNodePreview.label}</div>
+                )}
+                {deleteNodePreview.nodes_with_same_code > 1 && (
+                  <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded">
+                    <p className="text-sm text-yellow-800">
+                      ⚠️ <strong>{deleteNodePreview.nodes_with_same_code} Nodes</strong> mit Code "{deleteNodePreview.code}" 
+                      auf Level {deleteNodePreview.level} werden gelöscht (verschiedene Pfade)
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Auswirkungen */}
+              <div className="mb-6 space-y-3">
+                <h3 className="font-semibold text-gray-900">Folgende Daten werden gelöscht:</h3>
+                
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 p-3 bg-red-50 rounded-lg border border-red-200">
+                    <svg className="w-5 h-5 text-red-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span className="text-red-900 font-semibold">
+                      {deleteNodePreview.affected_nodes} Nodes gesamt (alle mit Code "{deleteNodePreview.code}" + Descendants)
+                    </span>
+                  </div>
+
+                  {deleteNodePreview.affected_successors > 0 && (
+                    <div className="flex items-center gap-2 p-3 bg-orange-50 rounded-lg border border-orange-200">
+                      <svg className="w-5 h-5 text-orange-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                      <span className="text-orange-900">
+                        {deleteNodePreview.affected_successors} Nachfolger-Beziehungen
+                      </span>
+                    </div>
+                  )}
+
+                  {deleteNodePreview.affected_constraints > 0 && (
+                    <div className="flex items-center gap-2 p-3 bg-yellow-50 rounded-lg border border-yellow-200">
+                      <svg className="w-5 h-5 text-yellow-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <span className="text-yellow-900">
+                        {deleteNodePreview.affected_constraints} Constraint-Kombinationen
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    if (deletingNode.id) {
+                      deleteNodeMutation.mutate(deletingNode.id);
+                    }
+                  }}
+                  disabled={deleteNodeMutation.isPending}
+                  className="flex-1 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-semibold disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                  {deleteNodeMutation.isPending ? 'Wird gelöscht...' : 'Endgültig löschen'}
+                </button>
+                <button
+                  onClick={() => {
+                    setShowDeleteNodeModal(false);
+                    setDeletingNode(null);
+                    setDeleteNodePreview(null);
+                  }}
+                  disabled={deleteNodeMutation.isPending}
+                  className="px-6 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-semibold disabled:cursor-not-allowed"
+                >
+                  Abbrechen
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {/* KMAT Reference Modal */}
+        {showKMATModal && createPortal(
+          <div 
+            className="fixed inset-0 bg-black/60 grid place-items-center z-50" 
+            onClick={() => setShowKMATModal(false)}
+          >
+            <div 
+              className="bg-white rounded-xl w-[min(600px,92vw)] shadow-2xl p-6"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-2xl font-bold text-gray-900">
+                  {kmatQuery.data?.found ? '✏️ KMAT Referenz bearbeiten' : '➕ KMAT Referenz hinzufügen'}
+                </h2>
+                <button 
+                  onClick={() => setShowKMATModal(false)} 
+                  className="text-gray-500 hover:text-gray-700 text-2xl"
+                >
+                  &times;
+                </button>
+              </div>
+
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                if (!kmatInput.trim()) {
+                  console.error('KMAT Referenz fehlt');
+                  return;
+                }
+                if (!selectedFamily?.id || pathNodeIds.length === 0) {
+                  console.error('Ungültige Produktkonfiguration');
+                  return;
+                }
+
+                const request: KMATReferenceRequest = {
+                  family_id: selectedFamily.id,
+                  path_node_ids: pathNodeIds,
+                  full_typecode: typecode,
+                  kmat_reference: kmatInput.trim(),
+                };
+
+                saveKMATMutation.mutate(request);
+              }}>
+                <div className="space-y-4">
+                  {/* Produktinfo */}
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                    <div className="text-sm text-blue-700 font-medium mb-1">Konfiguriertes Produkt:</div>
+                    <div className="font-mono text-blue-900">{displayTypecode}</div>
+                  </div>
+
+                  {/* KMAT Input */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      KMAT Referenz <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={kmatInput}
+                      onChange={(e) => setKMATInput(e.target.value)}
+                      placeholder="z.B. KMAT-12345"
+                      className="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                      autoFocus
+                      required
+                      disabled={saveKMATMutation.isPending}
+                    />
+                  </div>
+
+                  {/* Info Text */}
+                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                    <p className="text-sm text-gray-600">
+                      💡 Die KMAT Referenz wird nur für diese spezifische Produktkonfiguration gespeichert.
+                      Unterschiedliche Konfigurationen können unterschiedliche KMAT Referenzen haben.
+                    </p>
+                  </div>
+
+                  {/* Buttons */}
+                  <div className="flex gap-3 pt-2">
+                    <button
+                      type="submit"
+                      disabled={saveKMATMutation.isPending}
+                      className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-semibold disabled:bg-gray-400 disabled:cursor-not-allowed"
+                    >
+                      {saveKMATMutation.isPending ? 'Wird gespeichert...' : '💾 Speichern'}
+                    </button>
+                    
+                    {/* Delete button - nur wenn KMAT bereits existiert */}
+                    {kmatQuery.data?.found && kmatQuery.data && 'id' in kmatQuery.data && kmatQuery.data.id ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const kmatId = kmatQuery.data && 'id' in kmatQuery.data ? Number(kmatQuery.data.id) : null;
+                          if (kmatId && confirm('KMAT Referenz wirklich löschen?')) {
+                            deleteKMATMutation.mutate(kmatId);
+                            setShowKMATModal(false);
+                          }
+                        }}
+                        disabled={deleteKMATMutation.isPending}
+                        className="px-6 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-semibold disabled:bg-gray-400 disabled:cursor-not-allowed"
+                      >
+                        {deleteKMATMutation.isPending ? 'Wird gelöscht...' : '🗑️ Löschen'}
+                      </button>
+                    ) : null}
+                    
+                    <button
+                      type="button"
+                      onClick={() => setShowKMATModal(false)}
+                      disabled={saveKMATMutation.isPending || deleteKMATMutation.isPending}
+                      className="px-6 py-2.5 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-semibold disabled:cursor-not-allowed"
+                    >
+                      Abbrechen
+                    </button>
+                  </div>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
+        
+        {/* Banner Tooltips - Portal */}
+        {hoveredTooltip && createPortal(
+          <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[9999] w-80 bg-gray-900 text-white text-sm rounded-lg shadow-xl p-3 pointer-events-none">
+            {hoveredTooltip.type === 'family' && (
+              <>
+                <div className="font-semibold mb-1">Level 0 - Produktfamilie</div>
+                {hoveredTooltip.data?.label && (
+                  <div className="text-gray-300">{hoveredTooltip.data.label}</div>
+                )}
+              </>
+            )}
+            {hoveredTooltip.type === 'code' && (
+              <>
+                <div className="font-semibold mb-1">Level {hoveredTooltip.level}</div>
+                <div className="font-mono text-green-400 mb-2">{hoveredTooltip.data?.selection.code}</div>
+                {hoveredTooltip.data?.displaySelection.name && (
+                  <div className="mb-2">
+                    <span className="text-gray-400">Name:</span>
+                    <div className="mt-1">
+                      <span className="bg-purple-600 text-white text-xs font-medium px-2 py-1 rounded">
+                        {hoveredTooltip.data.displaySelection.name}
+                      </span>
+                    </div>
+                  </div>
+                )}
+                {hoveredTooltip.data?.displaySelection.label && (
+                  <div className="mb-2">
+                    <span className="text-gray-400">DE:</span>
+                    <div className="text-gray-200 whitespace-pre-line">{hoveredTooltip.data.displaySelection.label}</div>
+                  </div>
+                )}
+                {hoveredTooltip.data?.displaySelection.label_en && (
+                  <div>
+                    <span className="text-gray-400">EN:</span>
+                    <div className="text-gray-200 whitespace-pre-line">{hoveredTooltip.data.displaySelection.label_en}</div>
+                  </div>
+                )}
+              </>
+            )}
+            {hoveredTooltip.type === 'more' && (
+              <>
+                <div className="font-semibold mb-2">Alle möglichen Produktfamilien:</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {(hoveredTooltip.data as string[]).map((name, idx) => (
+                    <span key={idx} className="bg-yellow-600 text-white text-xs font-medium px-2 py-1 rounded">
+                      {name}
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>,
+          document.body
+        )}
+        
+        {/* Schema Visualization Modal */}
+        {showSchemaVisualization && schemaVisualizationData && (
+          <SchemaVisualization
+            data={schemaVisualizationData}
+            onClose={() => {
+              setShowSchemaVisualization(false);
+              setSchemaVisualizationData(null);
+            }}
+          />
+        )}
         </div>
       </div>
     </div>

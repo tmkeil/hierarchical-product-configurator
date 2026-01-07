@@ -16,6 +16,44 @@ const API_BASE = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 const TOKEN_KEY = 'auth_token';
 
+// Global 401 handler - wird vom AuthContext gesetzt
+let global401Handler: (() => void) | null = null;
+
+export function set401Handler(handler: () => void): void {
+  global401Handler = handler;
+}
+
+/**
+ * Helper function für fetch()-Calls mit automatischem 401-Handling
+ * Kann überall verwendet werden, wo direkte fetch()-Calls gemacht werden
+ */
+export async function fetchWithAuth(url: string, options?: RequestInit): Promise<Response> {
+  const token = getAuthToken();
+  
+  const headers: Record<string, string> = {
+    ...(options?.headers as Record<string, string>),
+  };
+  
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  
+  const response = await fetch(url, {
+    ...options,
+    headers,
+  });
+  
+  // 401 Unauthorized -> automatisches Handling
+  if (response.status === 401) {
+    removeAuthToken();
+    if (global401Handler) {
+      global401Handler();
+    }
+  }
+  
+  return response;
+}
+
 export function getAuthToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -121,6 +159,179 @@ export interface PathNode {
   depth: number;
 }
 
+export interface DerivedGroupNameResponse {
+  group_name?: string | null;  // Der eindeutige group_name (falls vorhanden)
+  is_unique: boolean;  // True wenn alle möglichen Pfade denselben group_name haben
+  possible_group_names: string[];  // Liste aller möglichen group_names
+}
+
+// ============================================================
+// Product Lifecycle Management - Successor Types
+// ============================================================
+
+export interface SuccessorInfo {
+  has_successor: boolean;
+  id?: number;
+  source_node_id?: number;
+  source_code?: string;
+  source_label?: string;
+  source_type?: 'node' | 'leaf' | 'intermediate';
+  target_node_id?: number | null;
+  target_code?: string;
+  target_name?: string;
+  target_label?: string;
+  target_full_code?: string | null;
+  target_family_code?: string | null;
+  replacement_type?: 'successor' | 'alternative' | 'deprecated';
+  migration_note?: string | null;
+  migration_note_en?: string | null;
+  warning_severity?: 'info' | 'warning' | 'critical';
+  allow_old_selection?: boolean;
+}
+
+export interface CreateSuccessorRequest {
+  source_node_id: number;
+  source_type: 'node' | 'leaf' | 'intermediate';
+  target_node_id?: number | null;
+  target_full_code?: string | null;
+  replacement_type: 'successor' | 'alternative' | 'deprecated';
+  migration_note?: string | null;
+  migration_note_en?: string | null;
+  effective_date?: string | null;
+  show_warning?: boolean;
+  allow_old_selection?: boolean;
+  warning_severity?: 'info' | 'warning' | 'critical';
+}
+
+export interface UpdateSuccessorRequest {
+  replacement_type?: 'successor' | 'alternative' | 'deprecated';
+  migration_note?: string | null;
+  migration_note_en?: string | null;
+  effective_date?: string | null;
+  show_warning?: boolean;
+  allow_old_selection?: boolean;
+  warning_severity?: 'info' | 'warning' | 'critical';
+}
+
+export interface SuccessorListItem {
+  id: number;
+  source_node_id: number;
+  source_code: string;
+  source_label: string;
+  source_typecode?: string | null;
+  source_level?: number;
+  source_family_code?: string | null;
+  source_type: 'node' | 'leaf' | 'intermediate';
+  target_node_id?: number | null;
+  target_code?: string;
+  target_label?: string;
+  target_typecode?: string | null;
+  target_level?: number;
+  target_full_code?: string | null;
+  target_family_code?: string | null;
+  replacement_type: 'successor' | 'alternative' | 'deprecated';
+  migration_note?: string | null;
+  migration_note_en?: string | null;
+  effective_date?: string | null;
+  show_warning: boolean;
+  allow_old_selection: boolean;
+  warning_severity: 'info' | 'warning' | 'critical';
+  created_at: string;
+  created_by?: string | null;
+}
+
+export interface CreateSuccessorBulkRequest {
+  source_node_ids: number[];   // Array of source node IDs (already filtered by frontend)
+  target_node_ids: number[];   // Array of target node IDs (already filtered by frontend)
+  migration_note?: string | null;
+}
+
+export interface CreateSuccessorBulkResponse {
+  type: 'links' | 'hint';  // Auto-detected mode
+  message: string;
+  created_count: number;
+  skipped_count?: number;  // For MODE 1: duplicates skipped
+  updated_count?: number;  // For MODE 2: existing hint updated
+  source_count?: number;  // Only for hints
+  target_count?: number;  // Only for hints
+  successors: Array<{
+    source_node_id: number;
+    source_code: string;
+    target_node_id: number;
+    target_code: string;
+  }>;
+}
+
+export interface CreateFamilyRequest {
+  code: string;           // z.B. "XYZ"
+  label?: string | null;  // Optional - z.B. "Neue Produktlinie"
+  label_en?: string | null;
+}
+
+export interface UpdateFamilyRequest {
+  label: string;          // z.B. "Aktualisierte Produktlinie"
+  label_en?: string | null;
+}
+
+export interface CreateFamilyResponse {
+  success: boolean;
+  family_id: number;
+  code: string;
+  label: string;
+  message: string;
+}
+
+export interface UpdateFamilyResponse {
+  success: boolean;
+  code: string;
+  label: string;
+  label_en: string | null;
+  message: string;
+}
+
+export interface DeleteFamilyPreview {
+  code: string;
+  label: string | null;
+  affected_nodes: number;
+  affected_successors: number;
+  affected_constraints: number;
+  can_delete: boolean;
+  warnings: (string | null)[];
+}
+
+export interface DeleteFamilyResponse {
+  success: boolean;
+  code: string;
+  deleted_nodes: number;
+  deleted_successors: number;
+  deleted_constraints: number;
+  message: string;
+}
+
+export interface DeleteNodePreview {
+  node_id: number;
+  code: string;
+  label: string | null;
+  level: number;
+  nodes_with_same_code: number;  // Anzahl Nodes mit gleichem Code+Level
+  affected_nodes: number;
+  affected_successors: number;
+  affected_constraints: number;
+  can_delete: boolean;
+  warnings: (string | null)[];
+}
+
+export interface DeleteNodeResponse {
+  success: boolean;
+  node_id: number;
+  code: string;
+  level: number;
+  deleted_nodes: number;
+  deleted_successors: number;
+  nodes_with_same_code: number;  // Anzahl Nodes mit gleichem Code+Level
+  message: string;
+}
+
 export interface NodeCheckResult {
   exists: boolean;
   code?: string | null;
@@ -155,6 +366,22 @@ export interface TypecodeDecodeResult {
   full_typecode?: string | null;
   families: string[];
   group_name?: string | null;  // Produktattribut (von erster Produktfamilie)
+}
+
+export interface CodeOccurrence {
+  family: string;  // Produktfamilie
+  level: number;  // Level
+  names: string[];  // Deduplizierte Name-Werte
+  labels_de: string[];  // Deduplizierte deutsche Labels
+  labels_en: string[];  // Deduplizierte englische Labels
+  node_count: number;  // Anzahl Nodes mit diesem Code
+  sample_node_id?: number | null;  // Beispiel Node ID
+}
+
+export interface CodeSearchResult {
+  exists: boolean;
+  code: string;
+  occurrences: CodeOccurrence[];  // Gruppiert nach Familie & Level
 }
 
 export interface HealthResponse {
@@ -233,7 +460,10 @@ async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> 
     // 401 Unauthorized -> Token ist invalid/abgelaufen, redirect zu Login
     if (response.status === 401) {
       removeAuthToken();
-      // Frontend wird durch Auth Context Provider automatisch zu /login redirecten
+      // Rufe globalen 401 Handler auf (vom AuthContext gesetzt)
+      if (global401Handler) {
+        global401Handler();
+      }
     }
     
     const error = await response.json().catch(() => ({ detail: response.statusText }));
@@ -436,6 +666,33 @@ export async function fetchAvailableOptions(
 }
 
 /**
+ * POST /api/derived-group-name
+ * 
+ * Berechnet den abgeleiteten group_name basierend auf bisherigen Auswahlen.
+ * 
+ * Use Case:
+ * - User hat BCC M313 ausgewählt
+ * - Alle möglichen vollständigen Produkte haben group_name="Bauform A"
+ * - → API gibt group_name zurück, auch wenn User noch nicht alle Levels gewählt hat
+ * 
+ * Returns:
+ * - group_name: Der eindeutige group_name (falls alle Pfade denselben haben)
+ * - is_unique: True wenn eindeutig
+ * - possible_group_names: Liste aller möglichen group_names
+ */
+export async function fetchDerivedGroupName(
+  previousSelections: Selection[]
+): Promise<DerivedGroupNameResponse> {
+  return fetchApi<DerivedGroupNameResponse>('/derived-group-name', {
+    method: 'POST',
+    body: JSON.stringify({
+      target_level: 1,  // Wird ignoriert, aber Required für OptionsRequest
+      previous_selections: previousSelections,
+    }),
+  });
+}
+
+/**
  * GET /api/nodes/{code}
  */
 export async function fetchNode(code: string): Promise<Node> {
@@ -468,6 +725,14 @@ export async function checkNodeCode(code: string): Promise<NodeCheckResult> {
  */
 export async function decodeTypecode(code: string): Promise<TypecodeDecodeResult> {
   return fetchApi<TypecodeDecodeResult>(`/nodes/decode/${code}`);
+}
+
+/**
+ * GET /api/nodes/search-code/{code}
+ * Sucht nach allen Vorkommen eines Codes (gruppiert nach Familie & Level)
+ */
+export async function searchCodeAllOccurrences(code: string): Promise<CodeSearchResult> {
+  return fetchApi<CodeSearchResult>(`/nodes/search-code/${code}`);
 }
 
 /**
@@ -732,4 +997,387 @@ export async function validateCodeAgainstConstraints(
       previous_selections: previousSelections,
     }),
   });
+}
+
+// ============================================================
+// Product Lifecycle Management - Successor API Functions
+// ============================================================
+
+/**
+ * GET /api/node/{node_id}/successor
+ * Get successor information for a specific node
+ */
+export async function fetchNodeSuccessor(nodeId: number): Promise<SuccessorInfo> {
+  return fetchApi<SuccessorInfo>(`/node/${nodeId}/successor`);
+}
+
+/**
+ * POST /api/product/successor
+ * Get successor for a complete product configuration
+ */
+export async function fetchProductSuccessor(
+  code?: string,
+  selections?: Selection[]
+): Promise<SuccessorInfo> {
+  return fetchApi<SuccessorInfo>('/product/successor', {
+    method: 'POST',
+    body: JSON.stringify({
+      code,
+      selections,
+    }),
+  });
+}
+
+/**
+ * GET /api/admin/successors
+ * Get all successor relationships (Admin only)
+ */
+export async function fetchAllSuccessors(): Promise<{ successors: SuccessorListItem[] }> {
+  return fetchApi<{ successors: SuccessorListItem[] }>('/admin/successors');
+}
+
+/**
+ * POST /api/admin/successors
+ * Create new successor relationship (Admin only)
+ */
+export async function createSuccessor(request: CreateSuccessorRequest): Promise<{ message: string; id: number }> {
+  return fetchApi<{ message: string; id: number }>('/admin/successors', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+}
+
+/**
+ * POST /api/admin/successors/bulk
+ * Create successor relationships for all filtered nodes (Admin only)
+ * Simplified API - uses path + code selection like configurator
+ */
+export async function createSuccessorBulk(request: CreateSuccessorBulkRequest): Promise<CreateSuccessorBulkResponse> {
+  return fetchApi<CreateSuccessorBulkResponse>('/admin/successors/bulk', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+}
+
+/**
+ * POST /api/admin/families
+ * Create new product family (Admin only)
+ */
+export async function createFamily(request: CreateFamilyRequest): Promise<CreateFamilyResponse> {
+  return fetchApi<CreateFamilyResponse>('/admin/families', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+}
+
+/**
+ * PUT /api/admin/families/{family_code}
+ * Update family labels (Admin only)
+ */
+export async function updateFamily(
+  familyCode: string,
+  request: UpdateFamilyRequest
+): Promise<UpdateFamilyResponse> {
+  return fetchApi<UpdateFamilyResponse>(`/admin/families/${familyCode}`, {
+    method: 'PUT',
+    body: JSON.stringify(request),
+  });
+}
+
+/**
+ * GET /api/admin/families/{family_code}/delete-preview
+ * Preview deletion impact (Admin only)
+ */
+export async function previewFamilyDeletion(
+  familyCode: string
+): Promise<DeleteFamilyPreview> {
+  return fetchApi<DeleteFamilyPreview>(`/admin/families/${familyCode}/delete-preview`);
+}
+
+/**
+ * DELETE /api/admin/families/{family_code}
+ * Delete product family and all descendants (Admin only)
+ */
+export async function deleteFamily(
+  familyCode: string
+): Promise<DeleteFamilyResponse> {
+  return fetchApi<DeleteFamilyResponse>(`/admin/families/${familyCode}`, {
+    method: 'DELETE',
+  });
+}
+
+/**
+ * GET /api/admin/nodes/{node_id}/delete-preview
+ * Preview node deletion impact (Admin only)
+ */
+export async function previewNodeDeletion(
+  nodeId: number
+): Promise<DeleteNodePreview> {
+  return fetchApi<DeleteNodePreview>(`/admin/nodes/${nodeId}/delete-preview`);
+}
+
+/**
+ * DELETE /api/admin/nodes/{node_id}
+ * Delete node and all descendants (Admin only)
+ */
+export async function deleteNode(
+  nodeId: number
+): Promise<DeleteNodeResponse> {
+  return fetchApi<DeleteNodeResponse>(`/admin/nodes/${nodeId}`, {
+    method: 'DELETE',
+  });
+}
+
+/**
+ * PUT /api/admin/successors/{id}
+ * Update successor relationship (Admin only)
+ */
+export async function updateSuccessor(
+  id: number,
+  request: UpdateSuccessorRequest
+): Promise<{ message: string }> {
+  return fetchApi<{ message: string }>(`/admin/successors/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(request),
+  });
+}
+
+/**
+ * DELETE /api/admin/successors/{id}
+ * Delete successor relationship (Admin only)
+ */
+export async function deleteSuccessor(id: number): Promise<{ message: string }> {
+  return fetchApi<{ message: string }>(`/admin/successors/${id}`, {
+    method: 'DELETE',
+  });
+}
+
+// ============================================================
+// KMAT References
+// ============================================================
+
+export interface KMATReferenceRequest {
+  family_id: number;
+  path_node_ids: number[];  // Array of node IDs in path
+  full_typecode: string;
+  kmat_reference: string;
+}
+
+export interface KMATReferenceResponse {
+  success: boolean;
+  id: number;
+  kmat_reference: string;
+  message: string;
+}
+
+export interface KMATReferenceData {
+  found: boolean;
+  id?: number;
+  kmat_reference?: string;
+  full_typecode?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+/**
+ * POST /api/admin/kmat-references
+ * Create or update KMAT reference for configured product (Admin only)
+ */
+export async function saveKMATReference(
+  request: KMATReferenceRequest
+): Promise<KMATReferenceResponse> {
+  return fetchApi<KMATReferenceResponse>('/admin/kmat-references', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+}
+
+/**
+ * GET /api/kmat-references
+ * Get KMAT reference for configured product (all users)
+ */
+export async function getKMATReference(
+  familyId: number,
+  pathNodeIds: number[]
+): Promise<KMATReferenceData> {
+  const pathJson = JSON.stringify(pathNodeIds);
+  return fetchApi<KMATReferenceData>(
+    `/kmat-references?family_id=${familyId}&path_node_ids=${encodeURIComponent(pathJson)}`
+  );
+}
+
+/**
+ * DELETE /api/admin/kmat-references/{kmat_id}
+ * Delete KMAT reference (Admin only)
+ */
+export async function deleteKMATReference(kmatId: number): Promise<{ success: boolean; message: string }> {
+  return fetchApi<{ success: boolean; message: string }>(`/admin/kmat-references/${kmatId}`, {
+    method: 'DELETE',
+  });
+}
+
+// ============================================================
+// Schema Visualization
+// ============================================================
+
+export interface SubSegmentDefinition {
+  start: number;  // Start position (0-based)
+  end: number;    // End position (exclusive)
+  name: string;   // Name for this character range
+}
+
+export interface SchemaPattern {
+  pattern: number[];  // z.B. [3, 5, 3]
+  pattern_string: string;  // z.B. "3-5-3"
+  example_code: string;  // Beispiel Typcode
+  segment_names: (string | null)[];  // Namen der Segmente
+  segment_examples: string[];  // Beispielwerte für jedes Segment
+  segment_subsegments: (SubSegmentDefinition[] | null)[];  // Sub-Segmente pro Level
+  count: number;  // Wie oft dieses Muster vorkommt
+}
+
+export interface GroupSchema {
+  group_name: string;
+  patterns: SchemaPattern[];
+}
+
+export interface FamilySchemaVisualization {
+  family_code: string;
+  family_label: string | null;
+  has_group_names: boolean;
+  groups: GroupSchema[];
+}
+
+/**
+ * GET /api/family-schema-visualization/{family_code}
+ * Get typecode schema visualization for a family
+ */
+export async function getFamilySchemaVisualization(
+  familyCode: string
+): Promise<FamilySchemaVisualization> {
+  return fetchApi<FamilySchemaVisualization>(`/family-schema-visualization/${familyCode}`);
+}
+
+// ============================================================
+// Admin: Segment Name Editing
+// ============================================================
+
+export interface SegmentNameUpdateRequest {
+  family_code: string;
+  group_name: string;
+  level: number;
+  new_name: string;
+  pattern_string?: string | null;  // Optional: Only edit nodes matching this pattern
+}
+
+export interface CreateSubSegmentRequest {
+  family_code: string;
+  group_name: string;
+  level: number;
+  pattern_string?: string | null;  // Optional: Only for specific schema pattern
+  subsegments: SubSegmentDefinition[];
+}
+
+export interface SubSegmentResponse {
+  id: number;
+  family_code: string;
+  group_name: string;
+  level: number;
+  pattern_string: string | null;
+  subsegments: SubSegmentDefinition[];
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SegmentNamePreviewResponse {
+  affected_node_ids: number[];
+  affected_count: number;
+  sample_nodes: Array<{
+    id: number;
+    code: string;
+    current_name: string | null;
+    level: number;
+    example_typecode: string | null;
+  }>;
+}
+
+/**
+ * POST /api/admin/segment-name-preview
+ * Preview which nodes will be affected by a segment name update (Admin only)
+ */
+export async function previewSegmentNameUpdate(
+  request: SegmentNameUpdateRequest
+): Promise<SegmentNamePreviewResponse> {
+  return fetchApi<SegmentNamePreviewResponse>('/admin/segment-name-preview', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+}
+
+/**
+ * PUT /api/admin/segment-name
+ * Update segment name for matching nodes (Admin only)
+ */
+export async function updateSegmentName(
+  request: SegmentNameUpdateRequest
+): Promise<{ success: boolean; message: string; updated_count: number; updated_node_ids: number[] }> {
+  return fetchApi<{ success: boolean; message: string; updated_count: number; updated_node_ids: number[] }>(
+    '/admin/segment-name',
+    {
+      method: 'PUT',
+      body: JSON.stringify(request),
+    }
+  );
+}
+
+// ============================================================
+// Admin: Sub-Segment Definitions (Character-Level)
+// ============================================================
+
+/**
+ * GET /api/subsegments/{family_code}/{group_name}/{level}
+ * Get sub-segment definitions for a specific level
+ */
+export async function getSubsegments(
+  familyCode: string,
+  groupName: string,
+  level: number,
+  patternString?: string | null
+): Promise<SubSegmentResponse[]> {
+  const params = patternString ? `?pattern_string=${encodeURIComponent(patternString)}` : '';
+  return fetchApi<SubSegmentResponse[]>(
+    `/subsegments/${familyCode}/${groupName}/${level}${params}`
+  );
+}
+
+/**
+ * POST /api/admin/subsegments
+ * Create or update sub-segment definitions (Admin only)
+ */
+export async function createOrUpdateSubsegments(
+  request: CreateSubSegmentRequest
+): Promise<{ success: boolean; message: string; id: number }> {
+  return fetchApi<{ success: boolean; message: string; id: number }>(
+    '/admin/subsegments',
+    {
+      method: 'POST',
+      body: JSON.stringify(request),
+    }
+  );
+}
+
+/**
+ * DELETE /api/admin/subsegments/{subsegment_id}
+ * Delete sub-segment definition (Admin only)
+ */
+export async function deleteSubsegments(
+  subsegmentId: number
+): Promise<{ success: boolean; message: string }> {
+  return fetchApi<{ success: boolean; message: string }>(
+    `/admin/subsegments/${subsegmentId}`,
+    {
+      method: 'DELETE',
+    }
+  );
 }

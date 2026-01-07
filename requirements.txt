@@ -22,5 +22,15 @@ anytree==2.13.0
 # PostgreSQL Database Driver (optional - nur für PostgreSQL/Azure SQL)
 psycopg2-binary==2.9.10
 
+# Azure Blob Storage (für Produktion)
+# Wird in Docker installiert
+# Lokal optional
+azure-storage-blob==12.19.0
+
+# Electron Desktop App Packaging
+# Nur nötig für Windows .exe Build
+pyinstaller==6.11.1
+setuptools>=70.0.0  # Für Python 3.313 Kompatibilität
+
 # Development Tools (optional)
 flake8==7.3.0

@@ -290,6 +290,73 @@ ORDER BY full_typecode;
 -- ============================================================================
 
 -- ============================================================================
+-- TABLE: product_successors
+-- ============================================================================
+-- Tracks product lifecycle: successors, replacements, and migrations
+-- Enables warnings about deprecated products and recommendations for new ones
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS product_successors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    
+    -- Source (the old/deprecated product or node)
+    source_node_id INTEGER NOT NULL,
+    source_type TEXT NOT NULL CHECK(source_type IN ('node', 'leaf', 'intermediate')),
+    
+    -- Target (the new/recommended product or node)
+    target_node_id INTEGER,  -- NULL if target is a full code from different family
+    target_full_code TEXT,  -- For cross-family migrations
+    target_family_code TEXT,  -- Product family of target (for quick lookup)
+    
+    -- Metadata
+    replacement_type TEXT NOT NULL CHECK(replacement_type IN ('successor', 'alternative', 'deprecated')),
+    migration_note TEXT,  -- e.g., "Technisch identisch, neue Bezeichnung"
+    migration_note_en TEXT,  -- English version
+    effective_date DATE,  -- When this recommendation becomes active
+    
+    -- Display settings
+    show_warning BOOLEAN DEFAULT 1,  -- Show warning to users
+    allow_old_selection BOOLEAN DEFAULT 1,  -- Can users still select old product?
+    warning_severity TEXT DEFAULT 'info' CHECK(warning_severity IN ('info', 'warning', 'critical')),
+    
+    -- Audit
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by TEXT,  -- Username of admin who created this
+    
+    -- Constraints
+    FOREIGN KEY (source_node_id) REFERENCES nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_node_id) REFERENCES nodes(id) ON DELETE SET NULL,
+    
+    -- Either target_node_id OR target_full_code must be set
+    CHECK (
+        (target_node_id IS NOT NULL AND target_full_code IS NULL) OR
+        (target_node_id IS NULL AND target_full_code IS NOT NULL)
+    )
+);
+
+-- ============================================================================
+-- INDEXES for product_successors
+-- ============================================================================
+
+-- For finding successors of a specific node
+CREATE INDEX IF NOT EXISTS idx_successors_source ON product_successors(source_node_id);
+
+-- For finding what products point to a specific target
+CREATE INDEX IF NOT EXISTS idx_successors_target ON product_successors(target_node_id) WHERE target_node_id IS NOT NULL;
+
+-- For filtering by type and active warnings
+CREATE INDEX IF NOT EXISTS idx_successors_type ON product_successors(replacement_type, show_warning);
+
+-- For date-based queries (future: auto-activate warnings)
+CREATE INDEX IF NOT EXISTS idx_successors_date ON product_successors(effective_date) WHERE effective_date IS NOT NULL;
+
+-- Prevent duplicate successor relationships (same source + target)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_successor 
+ON product_successors(source_node_id, target_node_id) 
+WHERE target_node_id IS NOT NULL;
+
+
+-- ============================================================================
 -- TABLE: users
 -- ============================================================================
 -- User accounts für Authentication (Admins & normale Users)
@@ -309,3 +376,73 @@ CREATE TABLE IF NOT EXISTS users (
 -- Indexes für Users
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+
+
+-- ============================================================================
+-- TABLE: kmat_references
+-- ============================================================================
+-- Stores KMAT references for configured products (full paths)
+-- Each configuration (path through tree) can have its own KMAT reference
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS kmat_references (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    
+    -- Product identification via path
+    family_id INTEGER NOT NULL,  -- Root node (level 0)
+    path_node_ids TEXT NOT NULL,  -- JSON array of node IDs: [1, 5, 12, 45]
+    full_typecode TEXT NOT NULL,  -- Complete product code for quick lookup
+    
+    -- KMAT reference data
+    kmat_reference TEXT NOT NULL,  -- The KMAT reference string
+    
+    -- Metadata
+    created_by INTEGER,  -- Admin user who created it
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (family_id) REFERENCES nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    
+    -- Ensure unique KMAT reference per path
+    UNIQUE(family_id, path_node_ids)
+);
+
+-- Indexes für KMAT References
+CREATE INDEX IF NOT EXISTS idx_kmat_family ON kmat_references(family_id);
+CREATE INDEX IF NOT EXISTS idx_kmat_typecode ON kmat_references(full_typecode);
+CREATE INDEX IF NOT EXISTS idx_kmat_created_by ON kmat_references(created_by);
+
+-- ============================================================================
+-- Table: segment_subsegments
+-- Stores sub-segment definitions for code segments (character-level breakdown)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS segment_subsegments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    
+    -- Identification
+    family_code TEXT NOT NULL,  -- e.g., "BCC"
+    group_name TEXT NOT NULL,   -- e.g., "Cordset"
+    level INTEGER NOT NULL,      -- Which level this applies to (0 = family, 1 = first code, etc.)
+    
+    -- Optional: Only for specific schema pattern
+    pattern_string TEXT,  -- e.g., "3-5-4-2-3-6-5" - NULL means applies to all patterns
+    
+    -- Sub-segment definitions (JSON array)
+    -- Example: [{"start": 0, "end": 1, "name": "range"}, {"start": 1, "end": 3, "name": "connector size"}]
+    subsegments TEXT NOT NULL,
+    
+    -- Metadata
+    created_by INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+    
+    -- Unique constraint: one definition per family/group/level/pattern combination
+    UNIQUE(family_code, group_name, level, pattern_string)
+);
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_subseg_lookup ON segment_subsegments(family_code, group_name, level);

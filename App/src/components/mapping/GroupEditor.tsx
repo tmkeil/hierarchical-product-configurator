@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Group, Position } from '../../types/mapping';
 import { PositionEditor } from './PositionEditor';
 import { SpecialMappingEditor } from './SpecialMappingEditor';
@@ -9,7 +9,7 @@ interface GroupEditorProps {
   onDelete: () => void;
 }
 
-export const GroupEditor: React.FC<GroupEditorProps> = ({ group, onUpdate, onDelete }) => {
+export const GroupEditor: React.FC<GroupEditorProps> = memo(({ group, onUpdate, onDelete }) => {
   const addPosition = () => {
     const newPosition = {
       id: `position-${Date.now()}`,
@@ -113,4 +113,4 @@ export const GroupEditor: React.FC<GroupEditorProps> = ({ group, onUpdate, onDel
       </div>
     </div>
   );
-};
+});

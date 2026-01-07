@@ -12,6 +12,7 @@ export interface FilterCriteria {
 export interface GroupMapping {
   group: number;
   position: number;
+  end_position?: number; // Optional: Für Codes mit Länge > 1
   codes: string[];
   labels: (string | LabelWithMedia)[];
   strict?: boolean;

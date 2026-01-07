@@ -247,8 +247,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Export database to JSON')
     parser.add_argument('--db', default='variantenbaum.db', help='Database file path')
     parser.add_argument('--output', default='variantenbaum_export.json', help='Output JSON file path')
+    parser.add_argument('--include-kmat', action='store_true', help='Also export KMAT references to separate file')
+    parser.add_argument('--kmat-output', default='kmat_references.json', help='Output file for KMAT references')
     
     args = parser.parse_args()
     
     export_database_to_json(db_path=args.db, output_file=args.output)
+    
+    # Optional: Export KMAT References
+    if args.include_kmat:
+        print("\n" + "="*60)
+        print("📋 Exportiere KMAT Referenzen...")
+        print("="*60)
+        from export_kmat_references import export_kmat_references
+        export_kmat_references(db_path=args.db, output_file=args.kmat_output)
 

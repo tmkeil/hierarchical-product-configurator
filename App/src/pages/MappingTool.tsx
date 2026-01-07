@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MappingEditorState, Group, MappingJSON } from '../types/mapping';
 import { GroupEditor } from '../components/mapping/GroupEditor';
@@ -13,40 +13,91 @@ export const MappingTool: React.FC = () => {
     groups: [],
     globalGroupMappings: [],
   });
+  const [isProcessing, setIsProcessing] = useState(false);
+  
+  // DEBUG: Log bei jedem Render
+  console.log('[MappingTool] Render - Groups:', state.groups.length);
 
-  const addGroup = () => {
-    const newGroup: Group = {
-      id: `group-${Date.now()}`,
-      groupNumber: state.groups.length + 1,
-      name: `Gruppe ${state.groups.length + 1}`,
-      positions: [],
-    };
-    setState(prev => ({ ...prev, groups: [...prev.groups, newGroup] }));
-  };
+  const addGroup = useCallback(() => {
+    setState(prev => {
+      const newGroup: Group = {
+        id: `group-${Date.now()}`,
+        groupNumber: prev.groups.length + 1,
+        name: `Gruppe ${prev.groups.length + 1}`,
+        positions: [],
+      };
+      return { ...prev, groups: [...prev.groups, newGroup] };
+    });
+  }, []);
 
-  const updateGroup = (groupId: string, updatedGroup: Group) => {
+  const updateGroup = useCallback((groupId: string, updatedGroup: Group) => {
     setState(prev => ({
       ...prev,
       groups: prev.groups.map(g => g.id === groupId ? updatedGroup : g),
     }));
-  };
+  }, []);
 
-  const deleteGroup = (groupId: string) => {
+  const deleteGroup = useCallback((groupId: string) => {
     setState(prev => ({
       ...prev,
       groups: prev.groups.filter(g => g.id !== groupId),
     }));
+  }, []);
+
+  const exportJSON = async () => {
+    try {
+      // Zeige visuelles Feedback
+      const button = document.activeElement as HTMLButtonElement;
+      if (button) button.disabled = true;
+      
+      // Generiere JSON asynchron
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const mappingJSON = convertToMappingJSON(state);
+      
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const blob = new Blob([JSON.stringify(mappingJSON, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `mapping_${state.family || 'unnamed'}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      
+      if (button) button.disabled = false;
+    } catch (error) {
+      console.error('Fehler beim Exportieren:', error);
+    }
   };
 
-  const exportJSON = () => {
-    const mappingJSON = convertToMappingJSON(state);
-    const blob = new Blob([JSON.stringify(mappingJSON, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `mapping_${state.family || 'unnamed'}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const importJSON = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setIsProcessing(true);
+    
+    // Sofort UI updaten
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    try {
+      const text = await file.text();
+      await new Promise(resolve => setTimeout(resolve, 10));
+      
+      const json = JSON.parse(text);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      
+      // Zeige sofort State mit nur Family
+      setState({ family: json.filter_criteria.family || '', groups: [], globalGroupMappings: [] });
+      await new Promise(resolve => setTimeout(resolve, 50));
+      
+      // Konvertiere in Chunks
+      const importedState = await convertFromMappingJSONAsync(json);
+      setState(importedState);
+    } catch (error) {
+      console.error('Fehler beim Importieren:', error);
+    } finally {
+      setIsProcessing(false);
+      event.target.value = '';
+    }
   };
 
   return (
@@ -87,6 +138,33 @@ export const MappingTool: React.FC = () => {
               Pattern wird automatisch basierend auf den Positionen generiert
             </p>
           </div>
+
+          {/* Import Button */}
+          <div className="mt-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Bestehendes Mapping importieren
+            </label>
+            {isProcessing ? (
+              <div className="text-sm text-blue-600">Verarbeite JSON...</div>
+            ) : (
+              <input
+                type="file"
+                accept=".json"
+                onChange={importJSON}
+                disabled={isProcessing}
+                className="block w-full text-sm text-gray-500
+                  file:mr-4 file:py-2 file:px-4
+                  file:rounded-md file:border-0
+                  file:text-sm file:font-semibold
+                  file:bg-blue-50 file:text-blue-700
+                  hover:file:bg-blue-100
+                  disabled:opacity-50"
+              />
+            )}
+            <p className="text-xs text-gray-500 mt-1">
+              Laden Sie ein bestehendes mapping.json, um es zu bearbeiten
+            </p>
+          </div>
         </div>
 
         {/* Gruppen */}
@@ -113,7 +191,7 @@ export const MappingTool: React.FC = () => {
         <div className="mb-6">
           <GlobalGroupMappingEditor
             mappings={state.globalGroupMappings}
-            onUpdate={globalGroupMappings => setState({ ...state, globalGroupMappings })}
+            onUpdate={globalGroupMappings => setState(prev => ({ ...prev, globalGroupMappings }))}
           />
         </div>
 
@@ -139,16 +217,16 @@ export const MappingTool: React.FC = () => {
  * Konvertiert Editor-State zu mapping.json Format
  */
 function convertToMappingJSON(state: MappingEditorState): MappingJSON {
-  // Generiere alle Kombinationen für group_position
-  const combinations = generateCombinationsForPreview(state.groups);
+  // Generiere alle Kombinationen für group_position (nur für Gruppen mit Codes)
+  const groupsWithCodes = state.groups.filter(g => g.positions.some(p => p.codes.length > 0));
+  const combinations = generateCombinationsForPreview(groupsWithCodes);
   const groupPositionString = combinations.join('|');
 
-  // Auto-generiere Pattern basierend auf Positionsstruktur
-  const pattern = generatePattern(state.groups);
+  // Auto-generiere Pattern basierend auf Positionsstruktur (nur für Gruppen mit Codes)
+  const pattern = generatePattern(groupsWithCodes);
 
-  // Erstelle group_mappings (neue relative Format)
-  // Sammle alle einzigartigen Code-Position-Kombinationen (keine Duplikate)
-  const mappingSet = new Map<string, any>(); // Key: "group:position:end_position:code"
+  // Erstelle group_mappings (gruppiere Codes mit gleicher Position)
+  const positionMap = new Map<string, { codes: any[], labels: any[], strict?: boolean }>(); // Key: "group:position:end_position"
   
   for (const group of state.groups) {
     // Sortiere Positionen nach Index
@@ -167,33 +245,32 @@ function convertToMappingJSON(state: MappingEditorState): MappingJSON {
         const codeLength = code.value.length;
         const endPos = currentTypecodePos + codeLength - 1;
         
-        // Erstelle unique key
-        const key = `${group.groupNumber}:${currentTypecodePos}:${endPos}:${code.value}`;
+        // Erstelle key für Position (ohne Code)
+        const posKey = `${group.groupNumber}:${currentTypecodePos}:${endPos}`;
         
-        // Nur hinzufügen, wenn noch nicht vorhanden
-        if (!mappingSet.has(key)) {
-          const mapping: any = {
-            group: group.groupNumber,
-            position: currentTypecodePos,
-            end_position: endPos,  // IMMER setzen, auch bei Länge 1!
-            codes: [code.value],
-            labels: [
-              code.pictures.length > 0 || code.links.length > 0
-                ? {
-                    text: code.labelDe,
-                    ...(code.pictures.length > 0 && { pictures: code.pictures }),
-                    ...(code.links.length > 0 && { links: code.links }),
-                  }
-                : code.labelDe,
-            ],
-          };
-          
-          // Füge strict von der Gruppe hinzu, wenn aktiviert
-          if (group.strict) {
-            mapping.strict = true;
-          }
-          
-          mappingSet.set(key, mapping);
+        // Gruppiere Codes mit gleicher Position
+        if (!positionMap.has(posKey)) {
+          positionMap.set(posKey, {
+            codes: [],
+            labels: [],
+            ...(group.strict && { strict: true }),
+          });
+        }
+        
+        const posGroup = positionMap.get(posKey)!;
+        
+        // Füge Code hinzu (nur wenn noch nicht vorhanden)
+        if (!posGroup.codes.includes(code.value)) {
+          posGroup.codes.push(code.value);
+          posGroup.labels.push(
+            code.pictures.length > 0 || code.links.length > 0
+              ? {
+                  text: code.labelDe,
+                  ...(code.pictures.length > 0 && { pictures: code.pictures }),
+                  ...(code.links.length > 0 && { links: code.links }),
+                }
+              : code.labelDe
+          );
         }
         
         // Rekursion für nächste Position
@@ -205,7 +282,17 @@ function convertToMappingJSON(state: MappingEditorState): MappingJSON {
   }
   
   // Konvertiere Map zu Array
-  const groupMappings = Array.from(mappingSet.values());
+  const groupMappings = Array.from(positionMap.entries()).map(([key, data]) => {
+    const [group, position, end_position] = key.split(':').map(Number);
+    return {
+      group,
+      position,
+      end_position,
+      codes: data.codes,
+      labels: data.labels,
+      ...(data.strict && { strict: true }),
+    };
+  });
 
   // Erstelle name_mappings (nur Gruppen mit groupName)
   const nameMappings = state.groups
@@ -217,8 +304,14 @@ function convertToMappingJSON(state: MappingEditorState): MappingJSON {
 
   // Erstelle special_mappings (nur Gruppen mit specialMapping)
   const specialMappings = state.groups
-    .filter(group => group.specialMapping && 
-      (group.specialMapping.positionRange || group.specialMapping.allowed))
+    .filter(group => group.specialMapping && (
+      group.specialMapping.positionRange || 
+      group.specialMapping.allowed ||
+      (group.specialMapping.labelsDe && group.specialMapping.labelsDe.length > 0) ||
+      (group.specialMapping.labelsEn && group.specialMapping.labelsEn.length > 0) ||
+      (group.specialMapping.pictures && group.specialMapping.pictures.length > 0) ||
+      (group.specialMapping.links && group.specialMapping.links.length > 0)
+    ))
     .map(group => {
       const mapping: any = { group: group.groupNumber };
       if (group.specialMapping!.positionRange) {
@@ -267,6 +360,139 @@ function convertToMappingJSON(state: MappingEditorState): MappingJSON {
       created_by: 'admin', // TODO: Get from auth context
       tool_version: '1.0',
     },
+  };
+}
+
+/**
+ * Konvertiert mapping.json zurück zum Editor-State (ASYNCHRON in Chunks)
+ */
+async function convertFromMappingJSONAsync(json: MappingJSON): Promise<MappingEditorState> {
+  const family = json.filter_criteria.family;
+  const timestamp = Date.now();
+  
+  // CHUNK 1: Erstelle Gruppen-Skelett
+  const groupsMap = new Map<number, Group>();
+  for (const mapping of json.group_mappings) {
+    if (!groupsMap.has(mapping.group)) {
+      groupsMap.set(mapping.group, {
+        id: `group-${mapping.group}`,
+        groupNumber: mapping.group,
+        name: `Gruppe ${mapping.group}`,
+        positions: [],
+      });
+    }
+  }
+  
+  // UI Pause
+  await new Promise(resolve => setTimeout(resolve, 0));
+  
+  // CHUNK 2: Füge Metadaten hinzu (name_mappings, special_mappings, strict)
+  if (json.name_mappings) {
+    for (const nameMapping of json.name_mappings) {
+      const groupNum = nameMapping.level - 1;
+      const group = groupsMap.get(groupNum);
+      if (group) group.groupName = nameMapping.name;
+    }
+  }
+  
+  if (json.special_mappings) {
+    for (const specialMapping of json.special_mappings) {
+      const group = groupsMap.get(specialMapping.group);
+      if (group) {
+        group.specialMapping = {
+          positionRange: specialMapping.position,
+          allowed: specialMapping.allowed,
+          labelsDe: specialMapping.labels,
+          labelsEn: specialMapping['labels-en'],
+          pictures: specialMapping.pictures,
+          links: specialMapping.links,
+        };
+      }
+    }
+  }
+  
+  for (const mapping of json.group_mappings) {
+    if (mapping.strict) {
+      const group = groupsMap.get(mapping.group);
+      if (group) group.strict = true;
+    }
+  }
+  
+  // UI Pause
+  await new Promise(resolve => setTimeout(resolve, 0));
+  
+  // CHUNK 3: Gruppiere Mappings nach Gruppe
+  const groupMappingsMap = new Map<number, typeof json.group_mappings>();
+  for (const mapping of json.group_mappings) {
+    if (!groupMappingsMap.has(mapping.group)) {
+      groupMappingsMap.set(mapping.group, []);
+    }
+    groupMappingsMap.get(mapping.group)!.push(mapping);
+  }
+  
+  // UI Pause
+  await new Promise(resolve => setTimeout(resolve, 0));
+  
+  // CHUNK 4: Rekonstruiere Positionen (batch-weise pro Gruppe)
+  let processedGroups = 0;
+  for (const [groupNum, mappings] of groupMappingsMap) {
+    const group = groupsMap.get(groupNum)!;
+    const positionsMap = new Map<number, Map<string, any[]>>();
+    
+    // Vereinfachte Rekonstruktion: Gruppiere nach position+end_position
+    for (const mapping of mappings) {
+      const posKey = `${mapping.position}:${mapping.end_position}`;
+      
+      if (!positionsMap.has(0)) positionsMap.set(0, new Map());
+      const posMap = positionsMap.get(0)!;
+      if (!posMap.has(posKey)) posMap.set(posKey, []);
+      
+      // Batch: Füge alle Codes hinzu
+      const codeArray = posMap.get(posKey)!;
+      for (let i = 0; i < mapping.codes.length; i++) {
+        const code = mapping.codes[i];
+        const label = mapping.labels[i];
+        codeArray.push({
+          id: `code-${timestamp}-${groupNum}-${codeArray.length}`,
+          value: code,
+          labelDe: typeof label === 'string' ? label : label.text,
+          labelEn: '',
+          pictures: typeof label === 'object' && label.pictures ? label.pictures : [],
+          links: typeof label === 'object' && label.links ? label.links : [],
+        });
+      }
+    }
+    
+    // Erstelle Positionen
+    let posIndex = 0;
+    for (const codesMap of positionsMap.values()) {
+      for (const codes of codesMap.values()) {
+        group.positions.push({
+          id: `position-${timestamp}-${groupNum}-${posIndex}`,
+          positionIndex: posIndex++,
+          codes: codes,
+        });
+      }
+    }
+    
+    // Pause alle 5 Gruppen
+    processedGroups++;
+    if (processedGroups % 5 === 0) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  }
+  
+  // CHUNK 5: Global Group Mappings
+  const globalGroupMappings = (json.global_group_mappings || []).map((gm, idx) => ({
+    id: `global-${timestamp}-${idx}`,
+    group: gm.group,
+    append: gm.append,
+  }));
+  
+  return {
+    family,
+    groups: Array.from(groupsMap.values()).sort((a, b) => a.groupNumber - b.groupNumber),
+    globalGroupMappings,
   };
 }
 

@@ -55,6 +55,9 @@ def parse_structured_label(label_text: str, full_code: Optional[str] = None) -> 
         if not lines:
             continue
         
+        # Track whether we've already found a code_segment in this block
+        found_code_segment_in_block = False
+        
         # Analyze first line
         first_line = lines[0]
         
@@ -68,11 +71,15 @@ def parse_structured_label(label_text: str, full_code: Optional[str] = None) -> 
             
             # Parse first content (if present)
             if first_content:
-                segment = parse_content_line(first_content, full_code)
+                segment = parse_content_line(first_content, full_code, allow_code_segment=True)
                 segment['title'] = current_title
                 segment['display_order'] = display_order
                 results.append(segment)
                 display_order += 1
+                
+                # Mark if this line had a code_segment
+                if segment.get('code_segment'):
+                    found_code_segment_in_block = True
             
             # Parse remaining lines in this block
             remaining_lines = lines[1:]
@@ -80,24 +87,30 @@ def parse_structured_label(label_text: str, full_code: Optional[str] = None) -> 
             # No title, all lines are content
             remaining_lines = lines
         
-        # Parse all content lines
+        # Parse all content lines (without code_segment extraction if already found)
         for line in remaining_lines:
             if line:
-                segment = parse_content_line(line, full_code)
+                # Only allow code_segment on first occurrence in block
+                allow_code = not found_code_segment_in_block
+                segment = parse_content_line(line, full_code, allow_code_segment=allow_code)
                 segment['title'] = current_title
                 segment['display_order'] = display_order
                 results.append(segment)
                 display_order += 1
+                
+                # Mark if we found a code_segment
+                if segment.get('code_segment'):
+                    found_code_segment_in_block = True
     
     return results
 
 
-def parse_content_line(line: str, full_code: Optional[str] = None) -> Dict:
+def parse_content_line(line: str, full_code: Optional[str] = None, allow_code_segment: bool = True) -> Dict:
     """
     Parse a single content line.
     
     Recognizes:
-    - "CODE = TEXT" → extracts code_segment + label
+    - "CODE = TEXT" → extracts code_segment + label (only if allow_code_segment=True)
     - "just text"  → only label
     
     Also calculates position_start/position_end if full_code is provided.
@@ -105,6 +118,7 @@ def parse_content_line(line: str, full_code: Optional[str] = None) -> Dict:
     Args:
         line: Single line of text
         full_code: Complete node code for position calculation
+        allow_code_segment: Whether to extract code_segment (False for subsequent lines in same block)
     
     Returns:
         Dict with keys: code_segment, label, position_start, position_end
@@ -113,7 +127,7 @@ def parse_content_line(line: str, full_code: Optional[str] = None) -> Dict:
     # CODE can be letters, numbers (case-insensitive)
     code_match = re.match(r'^([A-Z0-9]+)\s*=\s*(.+)$', line, re.IGNORECASE)
     
-    if code_match:
+    if code_match and allow_code_segment:
         code_seg = code_match.group(1)
         label_text = code_match.group(2).strip()
         
@@ -133,7 +147,8 @@ def parse_content_line(line: str, full_code: Optional[str] = None) -> Dict:
             'position_end': pos_end
         }
     else:
-        # No code segment, just text
+        # No code segment extraction (either no match or not allowed), just text
+        # If there's a "X = Y" pattern but code extraction is disabled, keep whole line as label
         return {
             'code_segment': None,
             'label': line,

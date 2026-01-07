@@ -7,9 +7,18 @@ mit einfachen SQL Queries gegen die Closure Table.
 Keine Rekursion mehr! Closure Table hat alle Pfade vorberechnet.
 """
 
+import sys
+import io
+
+# UTF-8 Encoding für Windows Console erzwingen
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import sqlite3
 from typing import List, Optional, Dict
@@ -20,6 +29,17 @@ from datetime import datetime, timedelta
 import os
 import json
 from dotenv import load_dotenv
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+import tempfile
+
+# Azure Blob Storage (conditional import - funktioniert lokal ohne Installation)
+try:
+    from azure.storage.blob import BlobServiceClient
+    AZURE_AVAILABLE = True
+except ImportError:
+    AZURE_AVAILABLE = False
 
 # Load Environment Variables
 load_dotenv(Path(__file__).parent.parent / ".env")
@@ -32,14 +52,34 @@ from auth import (
     TokenData
 )
 
+# Import Excel Export
+from excel_export import export_family_to_excel
+
 # ============================================================
 # Konfiguration
 # ============================================================
 
 # Pfade - müssen vor Helper Functions definiert werden
-UPLOADS_DIR = Path(__file__).parent / "uploads"
-UPLOADS_DIR.mkdir(exist_ok=True)
-DB_PATH = Path(__file__).parent / "variantenbaum.db"
+# Nutze Umgebungsvariablen falls gesetzt (für Electron), sonst Default
+UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", Path(__file__).parent / "uploads"))
+UPLOADS_DIR.mkdir(exist_ok=True, parents=True)
+
+DB_PATH = Path(os.getenv("DB_PATH", Path(__file__).parent / "variantenbaum.db"))
+print(f"[CONFIG] Using DB: {DB_PATH}")
+
+# Azure Blob Storage Initialization (conditional)
+blob_service: Optional[BlobServiceClient] = None
+if AZURE_AVAILABLE and os.getenv("AZURE_STORAGE_CONNECTION_STRING"):
+    try:
+        blob_service = BlobServiceClient.from_connection_string(
+            os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+        )
+        print("[OK] Azure Blob Storage aktiviert")
+    except Exception as e:
+        print(f"[WARN] Azure Blob Storage Fehler: {e}")
+        print("[INFO] Fallback zu lokalem File Storage")
+else:
+    print("[INFO] Lokaler File Storage (uploads/) wird genutzt")
 
 # ============================================================
 # Helper Functions
@@ -282,6 +322,22 @@ class TypecodeDecodeResult(BaseModel):
     families: List[str] = []
     group_name: Optional[str] = None  # Produktattribut (von erster Produktfamilie)
 
+class CodeOccurrence(BaseModel):
+    """Ein Vorkommen eines Codes"""
+    family: str  # Produktfamilie
+    level: int  # Level
+    names: List[str] = []  # Deduplizierte Name-Werte
+    labels_de: List[str] = []  # Deduplizierte deutsche Labels
+    labels_en: List[str] = []  # Deduplizierte englische Labels
+    node_count: int = 0  # Anzahl Nodes mit diesem Code auf diesem Level in dieser Familie
+    sample_node_id: Optional[int] = None  # Beispiel Node ID
+
+class CodeSearchResult(BaseModel):
+    """Ergebnis der erweiterten Code-Suche"""
+    exists: bool
+    code: str
+    occurrences: List[CodeOccurrence] = []  # Gruppiert nach Familie & Level
+
 class AvailableOption(BaseModel):
     """Option mit Kompatibilitäts-Flag und Pattern-Gruppierung"""
     id: Optional[int] = None  # Primäre Node ID (erste gefundene)
@@ -311,6 +367,12 @@ class OptionsRequest(BaseModel):
     previous_selections: List[Selection] = []
     group_filter: Optional[str] = None  # Optionaler Group-Filter
 
+class DerivedGroupNameResponse(BaseModel):
+    """Response für abgeleiteten group_name basierend auf bisherigen Auswahlen"""
+    group_name: Optional[str] = None  # Der eindeutige group_name (falls vorhanden)
+    is_unique: bool  # True wenn alle möglichen Pfade denselben group_name haben
+    possible_group_names: List[str] = []  # Liste aller möglichen group_names
+    
 class SearchOptionsRequest(BaseModel):
     """Request für /api/options/search Endpoint"""
     target_level: int
@@ -366,6 +428,26 @@ class CreateNodeResponse(BaseModel):
     node_id: int
     message: str
     nodes_created: Optional[int] = None  # Anzahl erstellter Nodes (bei Deep Copy)
+
+class CreateFamilyRequest(BaseModel):
+    """Request zum Erstellen einer neuen Produktfamilie (Level 0)"""
+    code: str  # z.B. "XYZ"
+    label: Optional[str] = None  # Optional: Falls nicht angegeben = code
+    label_en: Optional[str] = None
+
+class UpdateFamilyRequest(BaseModel):
+    """Request zum Aktualisieren der Labels einer Produktfamilie"""
+    label: str  # z.B. "Aktualisierte Produktlinie"
+    label_en: Optional[str] = None
+
+class CreateFamilyResponse(BaseModel):
+    """Response nach Produktfamilien-Erstellung"""
+    success: bool
+    family_id: int
+    code: str
+    label: str  # Kann leerer String sein
+    label_en: Optional[str] = None
+    message: str
     
 class SubtreeInfo(BaseModel):
     """Info über Subtree eines Nodes (für Preview)"""
@@ -934,9 +1016,10 @@ def get_product_families():
     
     Ersetzt: getProductFamilies() in variantenbaum.ts
     """
-    conn = get_db()
-    
     try:
+        conn = get_db()
+        print(f"[DEBUG] DB Connection OK: {conn}")
+        
         cursor = conn.execute("""
             SELECT 
                 id,
@@ -953,9 +1036,16 @@ def get_product_families():
         """)
         
         results = [dict(row) for row in cursor.fetchall()]
+        print(f"[DEBUG] Found {len(results)} product families")
         return results
+    except Exception as e:
+        print(f"[ERROR] get_product_families failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
     finally:
-        conn.close()
+        if 'conn' in locals():
+            conn.close()
 
 
 @app.get("/api/product-families/{family_code}/groups")
@@ -1004,6 +1094,33 @@ def get_group_max_level(family_code: str, group_name: str):
         
         result = cursor.fetchone()
         return {"max_level": result['max_level'] if result['max_level'] is not None else 0}
+    finally:
+        conn.close()
+
+
+@app.get("/api/export/family/{family_code}/excel")
+def export_family_excel_route(family_code: str):
+    """
+    Exportiert eine Produktfamilie als Excel-Datei.
+    
+    - Sheet 1: Übersicht (Frontend-Style)
+    - Sheet 2: Gemeinsame Codes (wenn vorhanden)
+    - Sheet 3+: Pro Gruppe mit ALLEN Levels, dedupliziert
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        temp_path, filename = export_family_to_excel(cursor, family_code)
+        return FileResponse(
+            path=temp_path,
+            filename=filename,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Export fehlgeschlagen: {str(e)}")
     finally:
         conn.close()
 
@@ -1736,6 +1853,130 @@ def get_available_options(request: OptionsRequest):
         conn.close()
 
 
+@app.post("/api/derived-group-name")
+async def get_derived_group_name(request: OptionsRequest):
+    """
+    Berechnet den abgeleiteten group_name basierend auf bisherigen Auswahlen.
+    
+    Logik:
+    - Findet alle möglichen vollständigen Produkte (bis zum letzten Level)
+    - Prüft ob alle diese Produkte denselben group_name haben
+    - Falls ja: group_name ist eindeutig und kann angezeigt werden
+    - Falls nein: Zeige Liste aller möglichen group_names
+    
+    Use Case:
+    - User hat BCC M313 ausgewählt
+    - Alle möglichen vollständigen Produkte haben group_name="Bauform A"
+    - → Zeige "Bauform A" schon jetzt an (ohne dass User alle Levels wählen muss)
+    """
+    conn = get_db()
+    
+    try:
+        # 1. Finde Root-Familie aus Selections
+        root_family = None
+        for selection in request.previous_selections:
+            if selection.level == 0:
+                root_family = selection.code
+                break
+        
+        if not root_family:
+            return DerivedGroupNameResponse(
+                group_name=None,
+                is_unique=False,
+                possible_group_names=[]
+            )
+        
+        # 2. Finde das höchste ausgewählte Level
+        max_selected_level = max(
+            (sel.level for sel in request.previous_selections),
+            default=0
+        )
+        
+        # 3. Finde alle vollständigen Produkte (Leafs), die kompatibel mit den Selections sind
+        #    Ein "vollständiges Produkt" = ein Leaf-Node (kein parent_id Nachfolger)
+        
+        # Starte mit allen Leaf-Nodes dieser Familie
+        leaf_query = """
+            SELECT DISTINCT n.id, n.group_name
+            FROM nodes n
+            INNER JOIN node_paths p ON n.id = p.descendant_id
+            WHERE p.ancestor_id = (SELECT id FROM nodes WHERE code = ? AND level = 0)
+              AND n.id NOT IN (SELECT DISTINCT parent_id FROM nodes WHERE parent_id IS NOT NULL)
+              AND n.group_name IS NOT NULL
+        """
+        
+        leaf_nodes = conn.execute(leaf_query, (root_family,)).fetchall()
+        
+        if not leaf_nodes:
+            return DerivedGroupNameResponse(
+                group_name=None,
+                is_unique=False,
+                possible_group_names=[]
+            )
+        
+        # 4. Filtere Leaf-Nodes: Nur die, die kompatibel mit allen Selections sind
+        compatible_leaf_ids = [leaf['id'] for leaf in leaf_nodes]
+        
+        for selection in request.previous_selections:
+            if selection.level == 0:
+                continue  # Familie schon geprüft
+            
+            # Sammle Selection IDs
+            sel_ids = selection.ids if selection.ids else ([selection.id] if selection.id else [])
+            
+            if not sel_ids:
+                continue
+            
+            # Filtere: Leaf muss Descendant von einer der Selection-IDs sein
+            sel_placeholders = ','.join(['?' for _ in sel_ids])
+            compatible_query = f"""
+                SELECT DISTINCT descendant_id
+                FROM node_paths
+                WHERE descendant_id IN ({','.join(['?' for _ in compatible_leaf_ids])})
+                  AND ancestor_id IN ({sel_placeholders})
+            """
+            
+            compatible_results = conn.execute(
+                compatible_query,
+                (*compatible_leaf_ids, *sel_ids)
+            ).fetchall()
+            
+            compatible_leaf_ids = [row['descendant_id'] for row in compatible_results]
+            
+            if not compatible_leaf_ids:
+                # Keine kompatiblen Leafs mehr
+                return DerivedGroupNameResponse(
+                    group_name=None,
+                    is_unique=False,
+                    possible_group_names=[]
+                )
+        
+        # 5. Sammle group_names von allen kompatiblen Leaf-Nodes
+        group_names = set()
+        for leaf in leaf_nodes:
+            if leaf['id'] in compatible_leaf_ids and leaf['group_name']:
+                group_names.add(leaf['group_name'])
+        
+        possible_group_names = sorted(list(group_names))
+        
+        # 6. Prüfe ob eindeutig
+        if len(group_names) == 1:
+            return DerivedGroupNameResponse(
+                group_name=possible_group_names[0],
+                is_unique=True,
+                possible_group_names=possible_group_names
+            )
+        else:
+            return DerivedGroupNameResponse(
+                group_name=None,
+                is_unique=False,
+                possible_group_names=possible_group_names
+            )
+    
+    finally:
+        conn.close()
+
+
 # ============================================================
 # QUERY 4b: Get Available Options with Search Filters (für erweiterte Suche)
 # ============================================================
@@ -2136,10 +2377,171 @@ def get_node_path(code: str):
 # ============================================================
 # Code Check - Prüft ob ein Code existiert (mit Normalisierung!)
 # ============================================================
+
+def search_with_wildcards(parts: list, cursor) -> NodeCheckResult:
+    """
+    Sucht nach Codes mit Wildcard-Unterstützung.
+    
+    NEUE Strategie für flexible Wildcards:
+    - Sammle alle nicht-wildcard Codes mit ihren relativen Positionen
+    - Suche Pfade die diese Codes in der richtigen Reihenfolge enthalten
+    - Wildcards "*" bedeuten: "irgendein Code dazwischen erlaubt"
+    
+    Beispiel: ["BCC", "M313", "*", "*", "OP123"]
+    → BCC muss Level 0 sein
+    → M313 muss irgendwo nach BCC kommen
+    → OP123 muss irgendwo nach M313 kommen
+    → Wildcards definieren nur die minimale Anzahl Levels dazwischen
+    """
+    if not parts:
+        return NodeCheckResult(exists=False)
+    
+    # Familie muss immer angegeben sein (keine Wildcard auf Level 0)
+    family_code = parts[0]
+    if family_code == '*':
+        return NodeCheckResult(exists=False, product_type="unknown")
+    
+    # Finde Familie
+    cursor.execute("""
+        SELECT id, code, label, label_en
+        FROM nodes
+        WHERE code = ? AND level = 0 AND parent_id IS NULL
+    """, (family_code,))
+    
+    family = cursor.fetchone()
+    if not family:
+        return NodeCheckResult(exists=False, product_type="unknown")
+    
+    # Wenn nur Familie + Wildcards: zähle einfach Treffer
+    non_wildcard_parts = [(i, part) for i, part in enumerate(parts) if part != '*']
+    
+    if len(non_wildcard_parts) == 1:
+        # Nur Familie, keine anderen Codes
+        return NodeCheckResult(
+            exists=True,
+            code=' '.join(parts[:2]) + ('-' + '-'.join(parts[2:]) if len(parts) > 2 else ''),
+            label="Familie gefunden",
+            label_en="Family found",
+            level=0,
+            families=[family_code],
+            is_complete_product=False,
+            product_type="wildcard_search"
+        )
+    
+    # Baue eine Query die den Pfad validiert
+    # Strategie: Suche alle Nodes die:
+    # 1. Zur richtigen Familie gehören
+    # 2. Die nicht-wildcard Codes in der richtigen Reihenfolge im Pfad haben
+    
+    # Sammle die nicht-wildcard Codes (ohne Familie)
+    required_codes = [(i, part) for i, part in enumerate(parts[1:], 1) if part != '*']
+    
+    if not required_codes:
+        # Nur Wildcards nach Familie
+        return NodeCheckResult(
+            exists=True,
+            code=' '.join(parts[:2]) + ('-' + '-'.join(parts[2:]) if len(parts) > 2 else ''),
+            label="Wildcard-Suche erfolgreich",
+            label_en="Wildcard search successful",
+            level=0,
+            families=[family_code],
+            is_complete_product=False,
+            product_type="wildcard_search"
+        )
+    
+    # Für jeden required code: finde alle Nodes mit diesem Code in dieser Familie
+    # und prüfe ob sie in der richtigen Reihenfolge im Pfad vorkommen
+    
+    # Suche nach dem LETZTEN nicht-wildcard Code im Pfad
+    last_level_idx, last_code = required_codes[-1]
+    
+    # Finde alle Nodes mit dem letzten Code
+    cursor.execute("""
+        SELECT DISTINCT n.id, n.code, n.label, n.label_en, n.level, n.full_typecode
+        FROM nodes n
+        INNER JOIN node_paths np ON n.id = np.descendant_id
+        INNER JOIN nodes family ON np.ancestor_id = family.id
+        WHERE family.code = ?
+          AND family.level = 0
+          AND n.code = ?
+          AND n.level >= ?
+    """, (family_code, last_code, last_level_idx))
+    
+    candidate_nodes = cursor.fetchall()
+    
+    if not candidate_nodes:
+        return NodeCheckResult(exists=False, product_type="unknown")
+    
+    # Für jeden Kandidaten: Prüfe ob alle required codes im Pfad vorkommen
+    valid_nodes = []
+    
+    for candidate in candidate_nodes:
+        # Hole den vollständigen Pfad zu diesem Node
+        cursor.execute("""
+            SELECT n.code, n.level
+            FROM nodes n
+            INNER JOIN node_paths np ON n.id = np.ancestor_id
+            WHERE np.descendant_id = ?
+              AND n.level > 0
+            ORDER BY n.level ASC
+        """, (candidate['id'],))
+        
+        path_codes = [(row['level'], row['code']) for row in cursor.fetchall()]
+        
+        # Prüfe ob alle required codes in der richtigen Reihenfolge vorkommen
+        path_dict = {level: code for level, code in path_codes}
+        
+        all_match = True
+        for req_level, req_code in required_codes:
+            # Finde ob dieser Code auf einem Level >= req_level vorkommt
+            found = False
+            for level, code in path_codes:
+                if level >= req_level and code == req_code:
+                    found = True
+                    break
+            
+            if not found:
+                all_match = False
+                break
+        
+        if all_match:
+            valid_nodes.append(candidate)
+    
+    if not valid_nodes:
+        return NodeCheckResult(exists=False, product_type="unknown")
+    
+    # Rekonstruiere den Suchcode (mit Wildcards)
+    search_code = ' '.join(parts[:2]) if len(parts) > 1 else parts[0]
+    if len(parts) > 2:
+        search_code += '-' + '-'.join(parts[2:])
+    
+    # Sichere Zugriff auf Row-Objekt
+    first_node = valid_nodes[0]
+    try:
+        full_typecode = first_node['full_typecode']
+    except (KeyError, IndexError):
+        full_typecode = None
+    
+    return NodeCheckResult(
+        exists=True,
+        code=search_code,
+        label=f"{len(valid_nodes)} Treffer gefunden",
+        label_en=f"{len(valid_nodes)} matches found",
+        level=first_node['level'],
+        families=[family_code],
+        is_complete_product=bool(full_typecode),
+        product_type="wildcard_search"
+    )
+
+
 @app.get("/api/nodes/check/{code:path}", response_model=NodeCheckResult)
 def check_node_code(code: str):
     """
     Prüft ob ein Produktcode existiert und gibt Details zurück.
+    
+    NEU: Unterstützt Wildcards!
+    - "*" = beliebiger Code auf diesem Level
+    - Beispiel: "BCC M313 * OP123" → findet alle Pfade mit BCC → M313 → (beliebig) → OP123
     
     WICHTIG: Prüft nur EXAKTE oder VOLLSTÄNDIGE PARTIAL Matches!
     - "A A12-X" → findet exakten Match
@@ -2151,6 +2553,7 @@ def check_node_code(code: str):
     - Standard: "A A12-XYZ123"
     - Mit Underscores: "A_A12_XYZ123"
     - Kleinbuchstaben: "a a12-xyz123"
+    - Mit Wildcards: "BCC * M313"
     """
     conn = get_db()
     cursor = conn.cursor()
@@ -2161,6 +2564,13 @@ def check_node_code(code: str):
         
         if not parts:
             return NodeCheckResult(exists=False)
+        
+        # Prüfe ob Wildcards enthalten sind
+        has_wildcards = any(part == '*' for part in parts)
+        
+        if has_wildcards:
+            # Wildcard-Suche
+            return search_with_wildcards(parts, cursor)
         
         # SPEZIALFALL: Einzelner Code (z.B. "A", "XYZ123")
         # → Suche nach Code auf beliebigem Level
@@ -2358,6 +2768,295 @@ def check_node_code(code: str):
         conn.close()
 
 
+@app.get("/api/nodes/search-code/{code:path}", response_model=CodeSearchResult)
+def search_code_all_occurrences(code: str):
+    """
+    Sucht nach einem Code und gibt ALLE Vorkommen zurück,
+    gruppiert nach Produktfamilie und Level.
+    
+    Für jeden Code wird gezeigt:
+    - In welchen Produktfamilien er vorkommt
+    - Auf welchen Levels er vorkommt
+    - Deduplizierte Labels (DE + EN)
+    - Anzahl der Nodes
+    
+    Beispiel: "A11" könnte vorkommen als:
+    - BCC, Level 2: ["Option A", "Variante 11"] (50 Nodes)
+    - BCC, Level 5: ["Endstück A11"] (12 Nodes)
+    - BTL7, Level 3: ["Sensor A11"] (8 Nodes)
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # Suche alle Nodes mit diesem Code
+        cursor.execute("""
+            SELECT 
+                n.id,
+                n.code,
+                n.name,
+                n.label,
+                n.label_en,
+                n.level,
+                family.code as family_code
+            FROM nodes n
+            INNER JOIN node_paths np ON n.id = np.descendant_id
+            INNER JOIN nodes family ON np.ancestor_id = family.id
+            WHERE n.code = ?
+              AND family.level = 0
+              AND family.code IS NOT NULL
+            ORDER BY family.code, n.level, n.id
+        """, (code,))
+        
+        nodes = cursor.fetchall()
+        
+        if not nodes:
+            return CodeSearchResult(exists=False, code=code, occurrences=[])
+        
+        # Gruppiere nach (family, level)
+        from collections import defaultdict
+        grouped = defaultdict(lambda: {
+            'names': set(),
+            'labels_de': set(),
+            'labels_en': set(),
+            'node_ids': [],
+        })
+        
+        for node in nodes:
+            key = (node['family_code'], node['level'])
+            
+            if node['name']:
+                grouped[key]['names'].add(node['name'])
+            if node['label']:
+                grouped[key]['labels_de'].add(node['label'])
+            if node['label_en']:
+                grouped[key]['labels_en'].add(node['label_en'])
+            
+            grouped[key]['node_ids'].append(node['id'])
+        
+        # Konvertiere zu CodeOccurrence Objekten
+        occurrences = []
+        for (family, level), data in sorted(grouped.items()):
+            occurrences.append(CodeOccurrence(
+                family=family,
+                level=level,
+                names=sorted(list(data['names'])),
+                labels_de=sorted(list(data['labels_de'])),
+                labels_en=sorted(list(data['labels_en'])),
+                node_count=len(data['node_ids']),
+                sample_node_id=data['node_ids'][0] if data['node_ids'] else None
+            ))
+        
+        return CodeSearchResult(
+            exists=True,
+            code=code,
+            occurrences=occurrences
+        )
+        
+    finally:
+        conn.close()
+
+
+# ============================================================
+# Wildcard Decode Helper
+# ============================================================
+def decode_with_wildcards(parts: list, original_input: str, cursor) -> TypecodeDecodeResult:
+    """
+    Entschlüsselt einen Typcode mit Wildcards.
+    
+    Beispiel: ["BCC", "M313", "*", "OP123"]
+    → Zeigt alle passenden Pfade mit Segmenten
+    """
+    if not parts or parts[0] == '*':
+        return TypecodeDecodeResult(
+            exists=False,
+            original_input=original_input,
+            product_type="unknown"
+        )
+    family_code = parts[0]
+    
+    # Finde Familie
+    cursor.execute("""
+        SELECT id, code, label, label_en, pictures, links, group_name
+        FROM nodes
+        WHERE code = ? AND level = 0 AND parent_id IS NULL
+    """, (family_code,))
+    
+    family = cursor.fetchone()
+    if not family:
+        return TypecodeDecodeResult(
+            exists=False,
+            original_input=original_input,
+            product_type="unknown"
+        )
+    
+    # Sammle Pfad-Segmente
+    path_segments = []
+    
+    # Familie als erstes Segment
+    family_pictures = filter_existing_pictures(family['pictures'] or '[]', UPLOADS_DIR)
+    family_links = parse_links(family['links'] or '[]')
+    
+    path_segments.append(CodePathSegment(
+        level=0,
+        code=family['code'],
+        label=family['label'],
+        label_en=family['label_en'],
+        group_name=family['group_name'],
+        pictures=family_pictures,
+        links=family_links
+    ))
+    
+    # Starte mit Familie
+    current_node_ids = [family['id']]
+    
+    # Iteriere durch die restlichen Parts
+    for level_idx, part in enumerate(parts[1:], start=1):
+        if not current_node_ids:
+            break
+        
+        if part == '*':
+            # Wildcard: Sammle ALLE Codes auf diesem Level
+            # WICHTIG: Nutze node_paths (closure table) statt parent_id, 
+            # weil Pattern-Container dazwischen sein können!
+            placeholders = ','.join('?' * len(current_node_ids))
+            cursor.execute(f"""
+                SELECT DISTINCT 
+                    child.id, child.code, child.name, 
+                    child.label, child.label_en,
+                    child.group_name, child.pictures, child.links
+                FROM nodes child
+                INNER JOIN node_paths np ON child.id = np.descendant_id
+                WHERE np.ancestor_id IN ({placeholders})
+                  AND child.level = ?
+                  AND child.code IS NOT NULL
+                ORDER BY child.code
+            """, (*current_node_ids, level_idx))
+            
+            nodes = cursor.fetchall()
+            
+            if nodes:
+                # Sammle alle Codes und zeige sie als Liste
+                codes = sorted(set(node['code'] for node in nodes))
+                
+                # Dedupliziere Labels
+                labels_de = set()
+                labels_en = set()
+                
+                for node in nodes:
+                    if node['label']:
+                        labels_de.add(node['label'])
+                    if node['label_en']:
+                        labels_en.add(node['label_en'])
+                
+                # Zeige alle gefundenen Codes in der Beschreibung
+                code_list = ', '.join(codes[:10])  # Zeige maximal 10 Codes
+                if len(codes) > 10:
+                    code_list += f' ... (+{len(codes) - 10} weitere)'
+                
+                path_segments.append(CodePathSegment(
+                    level=level_idx,
+                    code=f"*",  # Wildcard-Symbol
+                    label=f"Wildcard Match: {code_list}\n\nMögliche Labels:\n" + '\n'.join(sorted(labels_de)[:5]) if labels_de else f"Wildcard Match: {code_list}",
+                    label_en=f"Wildcard Match: {code_list}\n\nPossible Labels:\n" + '\n'.join(sorted(labels_en)[:5]) if labels_en else f"Wildcard Match: {code_list}",
+                    pictures=[],
+                    links=[]
+                ))
+                
+                # Nächste Level: Alle gefundenen Nodes
+                current_node_ids = [node['id'] for node in nodes]
+            else:
+                break
+        else:
+            # Exakter Code
+            # WICHTIG: Nutze node_paths (closure table) statt parent_id, 
+            # weil Pattern-Container dazwischen sein können!
+            placeholders = ','.join('?' * len(current_node_ids))
+            cursor.execute(f"""
+                SELECT DISTINCT 
+                    child.id, child.code, child.name,
+                    child.label, child.label_en,
+                    child.group_name, child.pictures, child.links
+                FROM nodes child
+                INNER JOIN node_paths np ON child.id = np.descendant_id
+                WHERE np.ancestor_id IN ({placeholders})
+                  AND child.level = ?
+                  AND child.code = ?
+            """, (*current_node_ids, level_idx, part))
+            
+            nodes = cursor.fetchall()
+            
+            if nodes:
+                # Dedupliziere Labels (falls mehrere Pfade zum gleichen Code führen)
+                labels_de = set()
+                labels_en = set()
+                all_pictures = []
+                all_links = []
+                
+                for node in nodes:
+                    if node['label']:
+                        labels_de.add(node['label'])
+                    if node['label_en']:
+                        labels_en.add(node['label_en'])
+                    if node['pictures']:
+                        pics = filter_existing_pictures(node['pictures'], UPLOADS_DIR)
+                        all_pictures.extend(pics)
+                    if node['links']:
+                        links = parse_links(node['links'])
+                        all_links.extend(links)
+                
+                # Dedupliziere Pictures und Links
+                seen_pic_urls = set()
+                unique_pictures = []
+                for pic in all_pictures:
+                    if pic['url'] not in seen_pic_urls:
+                        seen_pic_urls.add(pic['url'])
+                        unique_pictures.append(pic)
+                
+                seen_link_urls = set()
+                unique_links = []
+                for link in all_links:
+                    if link['url'] not in seen_link_urls:
+                        seen_link_urls.add(link['url'])
+                        unique_links.append(link)
+                
+                path_segments.append(CodePathSegment(
+                    level=level_idx,
+                    code=part,
+                    label='\n'.join(sorted(labels_de)) if labels_de else None,
+                    label_en='\n'.join(sorted(labels_en)) if labels_en else None,
+                    group_name=nodes[0]['group_name'] if nodes else None,
+                    pictures=unique_pictures,
+                    links=unique_links
+                ))
+                
+                current_node_ids = [node['id'] for node in nodes]
+            else:
+                break
+    
+    # Rekonstruiere normalisierten Code
+    normalized = ' '.join(parts[:2]) if len(parts) > 1 else parts[0]
+    if len(parts) > 2:
+        normalized += '-' + '-'.join(parts[2:])
+    
+    # Sichere Zugriff auf Row-Objekt
+    try:
+        group_name = family['group_name']
+    except (KeyError, IndexError):
+        group_name = None
+    
+    return TypecodeDecodeResult(
+        exists=len(path_segments) > 1,  # Mindestens Familie + ein Level
+        original_input=original_input,
+        normalized_code=normalized,
+        is_complete_product=False,  # Wildcards = nie vollständig
+        product_type="wildcard_search",
+        path_segments=path_segments,
+        families=[family_code],
+        group_name=group_name
+    )
+
+
 # ============================================================
 # Decode Typecode - Typcode entschlüsseln
 # ============================================================
@@ -2366,6 +3065,10 @@ def decode_typecode(code: str):
     """
     Entschlüsselt einen Typcode und zeigt alle Segmente mit Labels.
     Funktioniert sowohl für vollständige als auch für Teilcodes.
+    
+    NEU: Unterstützt Wildcards!
+    - "*" = beliebiger Code auf diesem Level
+    - Beispiel: "BCC M313 * OP123" → zeigt alle passenden Pfade
     """
     conn = get_db()
     cursor = conn.cursor()
@@ -2380,6 +3083,13 @@ def decode_typecode(code: str):
                 original_input=code,
                 product_type="unknown"
             )
+        
+        # Prüfe ob Wildcards enthalten sind
+        has_wildcards = any(part == '*' for part in parts)
+        
+        if has_wildcards and len(parts) > 1:
+            # Wildcard-Entschlüsselung für Multi-Level Codes
+            return decode_with_wildcards(parts, code, cursor)
         
         # Single-Code-Entschlüsselung
         if len(parts) == 1:
@@ -2653,6 +3363,181 @@ def decode_typecode(code: str):
 
 
 # ============================================================
+# KMAT References - Admin only
+# ============================================================
+
+class KMATReferenceRequest(BaseModel):
+    """Request zum Speichern/Updaten einer KMAT Referenz"""
+    family_id: int
+    path_node_ids: List[int]  # Array der Node IDs im Pfad
+    full_typecode: str
+    kmat_reference: str
+
+class KMATReferenceResponse(BaseModel):
+    """Response für KMAT Referenz Operationen"""
+    success: bool
+    id: int
+    kmat_reference: str
+    message: str
+
+@app.post("/api/admin/kmat-references", dependencies=[Depends(require_admin)])
+def create_or_update_kmat_reference(
+    request: KMATReferenceRequest,
+    current_user: TokenData = Depends(get_current_user)
+) -> KMATReferenceResponse:
+    """
+    Erstellt oder aktualisiert eine KMAT Referenz für ein konfiguriertes Produkt.
+    Die KMAT Referenz ist spezifisch für einen vollständigen Pfad durch den Baum.
+    Nur für Admins verfügbar.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # Konvertiere path_node_ids zu JSON string (ohne Leerzeichen, wie im Frontend)
+        path_json = json.dumps(request.path_node_ids, separators=(',', ':'))
+        
+        # Prüfe ob bereits eine Referenz für diesen Pfad existiert
+        cursor.execute("""
+            SELECT id FROM kmat_references
+            WHERE family_id = ? AND path_node_ids = ?
+        """, (request.family_id, path_json))
+        
+        existing = cursor.fetchone()
+        
+        if existing:
+            # Update existing
+            cursor.execute("""
+                UPDATE kmat_references
+                SET kmat_reference = ?,
+                    full_typecode = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (request.kmat_reference, request.full_typecode, existing[0]))
+            
+            kmat_id = existing[0]
+            message = "KMAT Referenz aktualisiert"
+        else:
+            # Insert new
+            cursor.execute("""
+                INSERT INTO kmat_references (
+                    family_id, path_node_ids, full_typecode, 
+                    kmat_reference, created_by
+                ) VALUES (?, ?, ?, ?, ?)
+            """, (
+                request.family_id,
+                path_json,
+                request.full_typecode,
+                request.kmat_reference,
+                current_user.user_id
+            ))
+            
+            kmat_id = cursor.lastrowid
+            message = "KMAT Referenz erstellt"
+        
+        conn.commit()
+        
+        return KMATReferenceResponse(
+            success=True,
+            id=kmat_id,
+            kmat_reference=request.kmat_reference,
+            message=message
+        )
+        
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Fehler beim Speichern der KMAT Referenz: {str(e)}"
+        )
+    finally:
+        conn.close()
+
+
+@app.get("/api/kmat-references")
+def get_kmat_reference(
+    family_id: int,
+    path_node_ids: str  # JSON string: "[1,5,12,45]"
+) -> dict:
+    """
+    Ruft die KMAT Referenz für ein konfiguriertes Produkt ab.
+    Öffentlich verfügbar (alle User).
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            SELECT id, kmat_reference, full_typecode, 
+                   created_at, updated_at
+            FROM kmat_references
+            WHERE family_id = ? AND path_node_ids = ?
+        """, (family_id, path_node_ids))
+        
+        result = cursor.fetchone()
+        
+        if result:
+            return {
+                "found": True,
+                "id": result[0],
+                "kmat_reference": result[1],
+                "full_typecode": result[2],
+                "created_at": result[3],
+                "updated_at": result[4]
+            }
+        else:
+            return {"found": False}
+            
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Fehler beim Abrufen der KMAT Referenz: {str(e)}"
+        )
+    finally:
+        conn.close()
+
+
+@app.delete("/api/admin/kmat-references/{kmat_id}", dependencies=[Depends(require_admin)])
+def delete_kmat_reference(
+    kmat_id: int,
+    current_user: TokenData = Depends(get_current_user)
+) -> dict:
+    """
+    Löscht eine KMAT Referenz.
+    Nur für Admins verfügbar.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("DELETE FROM kmat_references WHERE id = ?", (kmat_id,))
+        
+        if cursor.rowcount == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"KMAT Referenz mit ID {kmat_id} nicht gefunden"
+            )
+        
+        conn.commit()
+        
+        return {
+            "success": True,
+            "message": f"KMAT Referenz {kmat_id} gelöscht"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Fehler beim Löschen der KMAT Referenz: {str(e)}"
+        )
+    finally:
+        conn.close()
+
+
+# ============================================================
 # Create Node - Knoten hinzufügen
 # ============================================================
 @app.post("/api/nodes", response_model=CreateNodeResponse)
@@ -2708,6 +3593,604 @@ def create_node(request: CreateNodeRequest):
         raise HTTPException(
             status_code=500,
             detail=f"Failed to create node: {str(e)}"
+        )
+    finally:
+        conn.close()
+
+
+# ============================================================
+# Create Product Family (Admin only)
+# ============================================================
+@app.post("/api/admin/families", dependencies=[Depends(require_admin)])
+def create_family(
+    request: CreateFamilyRequest,
+    current_user: TokenData = Depends(get_current_user)
+) -> CreateFamilyResponse:
+    """
+    Erstellt eine neue Produktfamilie (Level 0 Node).
+    
+    - Erstellt Node mit parent_id=NULL
+    - Setzt family_id auf sich selbst
+    - Erstellt Self-Reference in node_paths (Closure Table)
+    
+    Nur für Admins verfügbar.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # Validierung: Code darf nicht leer sein
+        if not request.code or not request.code.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Code darf nicht leer sein"
+            )
+        
+        # Prüfe ob Code bereits existiert (auf Level 0)
+        cursor.execute("""
+            SELECT id FROM nodes 
+            WHERE code = ? AND parent_id IS NULL
+        """, (request.code.strip(),))
+        
+        if cursor.fetchone():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Produktfamilie mit Code '{request.code}' existiert bereits"
+            )
+        
+        # Position: Ermittle nächste freie Position (max + 1)
+        cursor.execute("""
+            SELECT COALESCE(MAX(position), -1) + 1 
+            FROM nodes 
+            WHERE parent_id IS NULL
+        """)
+        position = cursor.fetchone()[0]
+        
+        # name und label sind NOT NULL im Schema
+        # Falls label leer/None: verwende leeren String (wie bestehende Nodes)
+        label = (request.label or '').strip() if request.label else ''
+        label_en = (request.label_en or '').strip() if request.label_en else None
+        
+        # 1. Insert neue Produktfamilie
+        cursor.execute("""
+            INSERT INTO nodes (
+                code, name, label, label_en, level, 
+                parent_id, position
+            ) VALUES (?, ?, ?, ?, 0, NULL, ?)
+        """, (
+            request.code.strip(),
+            request.code.strip(),  # name = code (NOT NULL constraint)
+            label,  # label = '' wenn leer (NOT NULL constraint)
+            label_en,  # label_en kann NULL sein
+            position
+        ))
+        
+        family_id = cursor.lastrowid
+        
+        # 2. Closure Table: Self-reference manuell erstellen
+        # (Trigger feuert nur bei parent_id IS NOT NULL)
+        cursor.execute("""
+            INSERT INTO node_paths (ancestor_id, descendant_id, depth)
+            VALUES (?, ?, 0)
+        """, (family_id, family_id))
+        
+        conn.commit()
+        
+        return CreateFamilyResponse(
+            success=True,
+            family_id=family_id,
+            code=request.code.strip(),
+            label=label,  # Verwende den berechneten label ('' wenn leer)
+            label_en=label_en,
+            message=f"Produktfamilie '{request.code}' erfolgreich erstellt"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Fehler beim Erstellen der Produktfamilie: {str(e)}"
+        )
+    finally:
+        conn.close()
+
+
+# ============================================================
+# Update Product Family Labels (Admin only)
+# ============================================================
+@app.put("/api/admin/families/{family_code}", dependencies=[Depends(require_admin)])
+def update_family_labels(
+    family_code: str,
+    request: UpdateFamilyRequest,
+    current_user: TokenData = Depends(get_current_user)
+) -> dict:
+    """
+    Aktualisiert Labels einer Produktfamilie (Level 0 Node).
+    
+    - Nur label und label_en können aktualisiert werden
+    - Code kann nicht geändert werden
+    
+    Nur für Admins verfügbar.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # Finde die Produktfamilie
+        cursor.execute("""
+            SELECT id, code, label, label_en 
+            FROM nodes 
+            WHERE code = ? AND parent_id IS NULL AND level = 0
+        """, (family_code.upper(),))
+        
+        family = cursor.fetchone()
+        if not family:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Produktfamilie '{family_code}' nicht gefunden"
+            )
+        
+        # Update labels
+        cursor.execute("""
+            UPDATE nodes 
+            SET label = ?, label_en = ?, name = ?
+            WHERE id = ?
+        """, (
+            request.label,
+            request.label_en,
+            request.label,  # name = label für Familien
+            family['id']
+        ))
+        
+        conn.commit()
+        
+        return {
+            "success": True,
+            "code": family['code'],
+            "label": request.label,
+            "label_en": request.label_en,
+            "message": f"Labels für Produktfamilie '{family_code}' erfolgreich aktualisiert"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Fehler beim Aktualisieren der Produktfamilie: {str(e)}"
+        )
+    finally:
+        conn.close()
+
+
+# ============================================================
+# Delete Product Family (Admin only)
+# ============================================================
+@app.delete("/api/admin/families/{family_code}", dependencies=[Depends(require_admin)])
+def delete_family(
+    family_code: str,
+    current_user: TokenData = Depends(get_current_user)
+) -> dict:
+    """
+    Löscht eine Produktfamilie und ALLE zugehörigen Nodes (gesamter Subtree).
+    
+    Prüft vorher:
+    - Anzahl der betroffenen Nodes (Warnung)
+    - Abhängigkeiten in product_successors
+    - Abhängigkeiten in constraint_combinations
+    
+    WICHTIG: Der trg_node_delete Trigger kümmert sich automatisch um node_paths!
+    
+    Nur für Admins verfügbar.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # 1. Finde die Produktfamilie
+        cursor.execute("""
+            SELECT id, code 
+            FROM nodes 
+            WHERE code = ? AND parent_id IS NULL AND level = 0
+        """, (family_code.upper(),))
+        
+        family = cursor.fetchone()
+        if not family:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Produktfamilie '{family_code}' nicht gefunden"
+            )
+        
+        family_id = family['id']
+        
+        # 2. Zähle alle betroffenen Nodes (Family + alle Descendants)
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM node_paths
+            WHERE ancestor_id = ?
+        """, (family_id,))
+        total_nodes = cursor.fetchone()['count']
+        
+        # 3. Prüfe product_successors Abhängigkeiten
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM product_successors
+            WHERE source_node_id IN (
+                SELECT descendant_id FROM node_paths WHERE ancestor_id = ?
+            ) OR target_node_id IN (
+                SELECT descendant_id FROM node_paths WHERE ancestor_id = ?
+            )
+        """, (family_id, family_id))
+        successor_count = cursor.fetchone()['count']
+        
+        # 4. Lösche product_successors Einträge (auch wenn CASCADE das macht, explizit ist besser)
+        if successor_count > 0:
+            cursor.execute("""
+                DELETE FROM product_successors
+                WHERE source_node_id IN (
+                    SELECT descendant_id FROM node_paths WHERE ancestor_id = ?
+                ) OR target_node_id IN (
+                    SELECT descendant_id FROM node_paths WHERE ancestor_id = ?
+                )
+            """, (family_id, family_id))
+        
+        # 5. Lösche alle Nodes
+        # CASCADE löscht automatisch: node_labels, node_dates
+        # Trigger trg_node_delete löscht: node_paths
+        cursor.execute("""
+            DELETE FROM nodes
+            WHERE id IN (
+                SELECT descendant_id FROM node_paths WHERE ancestor_id = ?
+            )
+        """, (family_id,))
+        
+        deleted_count = cursor.rowcount
+        conn.commit()
+        
+        return {
+            "success": True,
+            "code": family_code,
+            "deleted_nodes": deleted_count,
+            "deleted_successors": successor_count,
+            "message": f"Produktfamilie '{family_code}' und {deleted_count} Nodes erfolgreich gelöscht"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Fehler beim Löschen der Produktfamilie: {str(e)}"
+        )
+    finally:
+        conn.close()
+
+
+# ============================================================
+# Delete Single Node (Admin only)
+# ============================================================
+@app.delete("/api/admin/nodes/{node_id}", dependencies=[Depends(require_admin)])
+def delete_node(
+    node_id: int,
+    current_user: TokenData = Depends(get_current_user)
+) -> dict:
+    """
+    Löscht ALLE Nodes mit demselben Code auf demselben Level und ALLE ihre Descendants.
+    
+    Beispiel: Wenn Node "C010" auf Level 2 gelöscht wird, werden ALLE Nodes mit
+    Code "C010" auf Level 2 gelöscht (da derselbe Code in verschiedenen Pfaden existieren kann).
+    
+    Prüft vorher:
+    - Anzahl der betroffenen Nodes (alle Nodes mit diesem Code+Level + ihre Descendants)
+    - Abhängigkeiten in product_successors
+    
+    WICHTIG: Der trg_node_delete Trigger kümmert sich automatisch um node_paths!
+    
+    Nur für Admins verfügbar.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # 1. Finde den Node
+        cursor.execute("""
+            SELECT id, code, label, level, parent_id
+            FROM nodes 
+            WHERE id = ?
+        """, (node_id,))
+        
+        node = cursor.fetchone()
+        if not node:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Node mit ID {node_id} nicht gefunden"
+            )
+        
+        # Verhindere Löschen von Level 0 (Produktfamilien) über diesen Endpoint
+        if node['level'] == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Produktfamilien (Level 0) müssen über DELETE /api/admin/families/{code} gelöscht werden"
+            )
+        
+        node_code = node['code']
+        node_level = node['level']
+        
+        # 2. Finde ALLE Nodes mit demselben Code auf demselben Level
+        cursor.execute("""
+            SELECT id FROM nodes
+            WHERE code = ? AND level = ?
+        """, (node_code, node_level))
+        
+        all_node_ids = [row['id'] for row in cursor.fetchall()]
+        
+        if not all_node_ids:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Keine Nodes mit Code '{node_code}' auf Level {node_level} gefunden"
+            )
+        
+        # 3. Zähle alle betroffenen Nodes (alle Nodes mit diesem Code+Level + alle ihre Descendants)
+        placeholders = ','.join('?' * len(all_node_ids))
+        cursor.execute(f"""
+            SELECT COUNT(DISTINCT descendant_id) as count
+            FROM node_paths
+            WHERE ancestor_id IN ({placeholders})
+        """, all_node_ids)
+        total_nodes = cursor.fetchone()['count']
+        
+        # 4. Prüfe product_successors Abhängigkeiten
+        cursor.execute(f"""
+            SELECT COUNT(*) as count
+            FROM product_successors
+            WHERE source_node_id IN (
+                SELECT DISTINCT descendant_id FROM node_paths WHERE ancestor_id IN ({placeholders})
+            ) OR target_node_id IN (
+                SELECT DISTINCT descendant_id FROM node_paths WHERE ancestor_id IN ({placeholders})
+            )
+        """, all_node_ids + all_node_ids)
+        successor_count = cursor.fetchone()['count']
+        
+        # 5. Lösche product_successors Einträge
+        if successor_count > 0:
+            cursor.execute(f"""
+                DELETE FROM product_successors
+                WHERE source_node_id IN (
+                    SELECT DISTINCT descendant_id FROM node_paths WHERE ancestor_id IN ({placeholders})
+                ) OR target_node_id IN (
+                    SELECT DISTINCT descendant_id FROM node_paths WHERE ancestor_id IN ({placeholders})
+                )
+            """, all_node_ids + all_node_ids)
+        
+        # 6. Lösche alle Nodes
+        # CASCADE löscht automatisch: node_labels, node_dates
+        # Trigger trg_node_delete löscht: node_paths
+        cursor.execute(f"""
+            DELETE FROM nodes
+            WHERE id IN (
+                SELECT DISTINCT descendant_id FROM node_paths WHERE ancestor_id IN ({placeholders})
+            )
+        """, all_node_ids)
+        
+        deleted_count = cursor.rowcount
+        conn.commit()
+        
+        return {
+            "success": True,
+            "node_id": node_id,
+            "code": node_code,
+            "level": node_level,
+            "deleted_nodes": deleted_count,
+            "deleted_successors": successor_count,
+            "nodes_with_same_code": len(all_node_ids),
+            "message": f"Alle {len(all_node_ids)} Nodes mit Code '{node_code}' (Level {node_level}) und insgesamt {deleted_count} Nodes erfolgreich gelöscht"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Fehler beim Löschen des Nodes: {str(e)}"
+        )
+    finally:
+        conn.close()
+
+
+# ============================================================
+# Preview Node Deletion (Admin only)
+# ============================================================
+@app.get("/api/admin/nodes/{node_id}/delete-preview", dependencies=[Depends(require_admin)])
+def preview_node_deletion(
+    node_id: int,
+    current_user: TokenData = Depends(get_current_user)
+) -> dict:
+    """
+    Zeigt eine Vorschau der Auswirkungen beim Löschen eines Nodes.
+    
+    WICHTIG: Löscht ALLE Nodes mit demselben Code auf demselben Level!
+    
+    Gibt zurück:
+    - Node-Informationen (Code, Label, Level)
+    - Anzahl der Nodes mit demselben Code+Level
+    - Anzahl betroffener Nodes gesamt (inkl. Descendants)
+    - Anzahl betroffener Successors
+    
+    Nur für Admins verfügbar.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # Finde den Node
+        cursor.execute("""
+            SELECT id, code, label, level, parent_id
+            FROM nodes 
+            WHERE id = ?
+        """, (node_id,))
+        
+        node = cursor.fetchone()
+        if not node:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Node mit ID {node_id} nicht gefunden"
+            )
+        
+        # Verhindere Löschen von Level 0 über diesen Endpoint
+        if node['level'] == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Produktfamilien (Level 0) können nicht über diesen Endpoint gelöscht werden"
+            )
+        
+        node_code = node['code']
+        node_level = node['level']
+        
+        # Finde ALLE Nodes mit demselben Code auf demselben Level
+        cursor.execute("""
+            SELECT id FROM nodes
+            WHERE code = ? AND level = ?
+        """, (node_code, node_level))
+        
+        all_node_ids = [row['id'] for row in cursor.fetchall()]
+        
+        if not all_node_ids:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Keine Nodes mit Code '{node_code}' auf Level {node_level} gefunden"
+            )
+        
+        # Zähle betroffene Nodes gesamt
+        placeholders = ','.join('?' * len(all_node_ids))
+        cursor.execute(f"""
+            SELECT COUNT(DISTINCT descendant_id) as count
+            FROM node_paths
+            WHERE ancestor_id IN ({placeholders})
+        """, all_node_ids)
+        total_nodes = cursor.fetchone()['count']
+        
+        # Zähle betroffene Successors
+        cursor.execute(f"""
+            SELECT COUNT(*) as count
+            FROM product_successors
+            WHERE source_node_id IN (
+                SELECT DISTINCT descendant_id FROM node_paths WHERE ancestor_id IN ({placeholders})
+            ) OR target_node_id IN (
+                SELECT DISTINCT descendant_id FROM node_paths WHERE ancestor_id IN ({placeholders})
+            )
+        """, all_node_ids + all_node_ids)
+        successor_count = cursor.fetchone()['count']
+        
+        return {
+            "node_id": node_id,
+            "code": node_code,
+            "label": node['label'],
+            "level": node_level,
+            "nodes_with_same_code": len(all_node_ids),
+            "affected_nodes": total_nodes,
+            "affected_successors": successor_count,
+            "affected_constraints": 0,
+            "can_delete": True,
+            "warnings": [
+                f"{len(all_node_ids)} Nodes mit Code '{node_code}' auf Level {node_level} werden gelöscht",
+                f"{total_nodes} Nodes gesamt (inkl. alle Descendants)",
+                f"{successor_count} Nachfolger-Beziehungen werden gelöscht" if successor_count > 0 else None,
+            ]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Fehler beim Abrufen der Lösch-Vorschau: {str(e)}"
+        )
+    finally:
+        conn.close()
+
+
+# ============================================================
+# Preview Family Deletion (Admin only)
+# ============================================================
+@app.get("/api/admin/families/{family_code}/delete-preview", dependencies=[Depends(require_admin)])
+def preview_family_deletion(
+    family_code: str,
+    current_user: TokenData = Depends(get_current_user)
+) -> dict:
+    """
+    Zeigt eine Vorschau der Auswirkungen beim Löschen einer Produktfamilie.
+    
+    Gibt zurück:
+    - Anzahl betroffener Nodes
+    - Anzahl betroffener Successors
+    - Anzahl betroffener Constraints
+    
+    Nur für Admins verfügbar.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # Finde die Produktfamilie
+        cursor.execute("""
+            SELECT id, code, label 
+            FROM nodes 
+            WHERE code = ? AND parent_id IS NULL AND level = 0
+        """, (family_code.upper(),))
+        
+        family = cursor.fetchone()
+        if not family:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Produktfamilie '{family_code}' nicht gefunden"
+            )
+        
+        family_id = family['id']
+        
+        # Zähle betroffene Nodes
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM node_paths
+            WHERE ancestor_id = ?
+        """, (family_id,))
+        total_nodes = cursor.fetchone()['count']
+        
+        # Zähle betroffene Successors
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM product_successors
+            WHERE source_node_id IN (
+                SELECT descendant_id FROM node_paths WHERE ancestor_id = ?
+            ) OR target_node_id IN (
+                SELECT descendant_id FROM node_paths WHERE ancestor_id = ?
+            )
+        """, (family_id, family_id))
+        successor_count = cursor.fetchone()['count']
+        
+        return {
+            "code": family['code'],
+            "label": family['label'],
+            "affected_nodes": total_nodes,
+            "affected_successors": successor_count,
+            "affected_constraints": 0,
+            "can_delete": True,
+            "warnings": [
+                f"{total_nodes} Nodes werden gelöscht",
+                f"{successor_count} Nachfolger-Beziehungen werden gelöscht" if successor_count > 0 else None,
+            ]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Fehler beim Abrufen der Lösch-Vorschau: {str(e)}"
         )
     finally:
         conn.close()
@@ -3181,6 +4664,15 @@ def bulk_update_nodes(request: BulkUpdateRequest):
                     query = f"UPDATE nodes SET {', '.join(updates)} WHERE id = ?"
                     cursor.execute(query, params)
                     updated_count += cursor.rowcount
+                    
+                    # Synchronisiere node_labels wenn label geändert wurde
+                    if request.updates.append_label or request.updates.append_label_en:
+                        # Hole die jetzt aktualisierten Werte
+                        updated_node = cursor.execute(
+                            "SELECT label, label_en FROM nodes WHERE id = ?",
+                            (node_id,)
+                        ).fetchone()
+                        _sync_node_labels(cursor, node_id, updated_node['label'], updated_node['label_en'])
         else:
             # DIREKTER SET-Modus: Batch-Update
             update_fields = []
@@ -3223,6 +4715,18 @@ def bulk_update_nodes(request: BulkUpdateRequest):
             
             cursor.execute(query, params)
             updated_count = cursor.rowcount
+            
+            # Synchronisiere node_labels für alle betroffenen Nodes wenn label geändert wurde
+            if request.updates.label is not None or request.updates.label_en is not None:
+                for node_id in request.node_ids:
+                    # Hole die aktuellen label-Werte für diesen Node
+                    node = cursor.execute(
+                        "SELECT label, label_en FROM nodes WHERE id = ?",
+                        (node_id,)
+                    ).fetchone()
+                    
+                    if node:
+                        _sync_node_labels(cursor, node_id, node['label'], node['label_en'])
         
         conn.commit()
         
@@ -3314,6 +4818,20 @@ def update_node(node_id: int, request: UpdateNodeRequest):
         params.append(node_id)
         query = f"UPDATE nodes SET {', '.join(updates)} WHERE id = ?"
         cursor.execute(query, params)
+        
+        # Synchronisiere node_labels wenn label oder label_en geändert wurden
+        if request.label is not None or request.label_en is not None:
+            # Hole aktuelle Labels (um fehlende Werte zu ergänzen)
+            current = cursor.execute(
+                "SELECT label, label_en FROM nodes WHERE id = ?",
+                (node_id,)
+            ).fetchone()
+            
+            final_label_de = request.label if request.label is not None else current['label']
+            final_label_en = request.label_en if request.label_en is not None else current['label_en']
+            
+            _sync_node_labels(cursor, node_id, final_label_de, final_label_en)
+        
         conn.commit()
         
         return UpdateNodeResponse(
@@ -4159,6 +5677,7 @@ async def upload_node_image(
 ):
     """
     Lädt ein Bild für einen Node hoch und speichert die URL in der Datenbank.
+    Unterstützt lokalen Upload (Entwicklung) und Azure Blob Storage (Produktion).
     
     Args:
         node_id: Node ID in der Datenbank
@@ -4181,21 +5700,47 @@ async def upload_node_image(
     # Generiere eindeutigen Dateinamen
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_filename = f"node_{node_id}_{timestamp}{file_ext}"
-    file_path = UPLOADS_DIR / safe_filename
     
-    # Speichere Datei
-    try:
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Fehler beim Speichern: {str(e)}"
-        )
-    
-    # URL für Frontend
-    file_url = f"/uploads/{safe_filename}"
+    # Upload-Logik: Azure oder Lokal
     uploaded_at = datetime.now().isoformat()
+    
+    if blob_service:
+        # PRODUKTION: Upload zu Azure Blob Storage
+        try:
+            # Lese Datei-Inhalt
+            file_content = await file.read()
+            
+            # Upload zu Azure Blob
+            blob_client = blob_service.get_blob_client(
+                container="uploads",
+                blob=safe_filename
+            )
+            blob_client.upload_blob(file_content, overwrite=True)
+            
+            # Azure URL (absolut)
+            file_url = blob_client.url
+            
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Azure Upload Fehler: {str(e)}"
+            )
+    else:
+        # ENTWICKLUNG: Upload zu lokalem uploads/ Ordner
+        file_path = UPLOADS_DIR / safe_filename
+        
+        try:
+            with file_path.open("wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            
+            # Relativer Pfad (wird vom Frontend mit API_BASE_URL kombiniert)
+            file_url = f"/uploads/{safe_filename}"
+            
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Lokaler Upload Fehler: {str(e)}"
+            )
     
     # Speichere in Datenbank (in pictures JSON array)
     try:
@@ -4420,6 +5965,712 @@ async def delete_node_link(node_id: int, url: str):
 
 
 # ============================================================
+# PRODUCT LIFECYCLE MANAGEMENT - Successor/Replacement Tracking
+# ============================================================
+
+# Pydantic Models
+class SuccessorResponse(BaseModel):
+    """Response model for successor information"""
+    id: int
+    source_node_id: int
+    source_type: str
+    target_node_id: Optional[int] = None
+    target_full_code: Optional[str] = None
+    target_family_code: Optional[str] = None
+    replacement_type: str
+    migration_note: Optional[str] = None
+    migration_note_en: Optional[str] = None
+    effective_date: Optional[str] = None
+    show_warning: bool
+    allow_old_selection: bool
+    warning_severity: str
+    # Enriched data
+    target_name: Optional[str] = None
+    target_label: Optional[str] = None
+    target_code: Optional[str] = None
+
+class CreateSuccessorRequest(BaseModel):
+    """Request to create a new successor relationship"""
+    source_node_id: int
+    source_type: str  # 'node', 'leaf', 'intermediate'
+    target_node_id: Optional[int] = None
+    target_full_code: Optional[str] = None
+    replacement_type: str  # 'successor', 'alternative', 'deprecated'
+    migration_note: Optional[str] = None
+    migration_note_en: Optional[str] = None
+    effective_date: Optional[str] = None
+    show_warning: bool = True
+    allow_old_selection: bool = True
+    warning_severity: str = "info"  # 'info', 'warning', 'critical'
+
+class UpdateSuccessorRequest(BaseModel):
+    """Request to update an existing successor relationship"""
+    replacement_type: Optional[str] = None
+    migration_note: Optional[str] = None
+    migration_note_en: Optional[str] = None
+    effective_date: Optional[str] = None
+    show_warning: Optional[bool] = None
+    allow_old_selection: Optional[bool] = None
+    warning_severity: Optional[str] = None
+
+class CreateSuccessorBulkRequest(BaseModel):
+    """Create successor relationships using pre-filtered node IDs from frontend"""
+    source_node_ids: List[int]  # Array of source node IDs (already filtered by frontend)
+    target_node_ids: List[int]  # Array of target node IDs (already filtered by frontend)
+    migration_note: Optional[str] = None
+
+
+@app.get("/api/node/{node_id}/successor")
+def get_node_successor(node_id: int):
+    """
+    Get successor information for a specific node.
+    
+    Returns active successor warnings for the given node.
+    Used in configurator to show badges and warnings.
+    
+    Phase 1: Leaf products (is_intermediate or actual leaves)
+    Phase 2: Individual nodes
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # Get successor with target node details
+        cursor.execute("""
+            SELECT 
+                ps.*,
+                target.code as target_code,
+                target.name as target_name,
+                target.label as target_label,
+                target.full_typecode as target_typecode
+            FROM product_successors ps
+            LEFT JOIN nodes target ON ps.target_node_id = target.id
+            WHERE ps.source_node_id = ?
+              AND ps.show_warning = 1
+              AND (ps.effective_date IS NULL OR ps.effective_date <= date('now'))
+            ORDER BY ps.warning_severity DESC, ps.created_at DESC
+            LIMIT 1
+        """, (node_id,))
+        
+        row = cursor.fetchone()
+        
+        if not row:
+            return {"has_successor": False}
+        
+        # Build response
+        result = {
+            "has_successor": True,
+            "id": row['id'],
+            "source_node_id": row['source_node_id'],
+            "source_type": row['source_type'],
+            "target_node_id": row['target_node_id'],
+            "target_full_code": row['target_full_code'] or row['target_typecode'],
+            "target_family_code": row['target_family_code'],
+            "replacement_type": row['replacement_type'],
+            "migration_note": row['migration_note'],
+            "migration_note_en": row['migration_note_en'],
+            "warning_severity": row['warning_severity'],
+            "allow_old_selection": bool(row['allow_old_selection']),
+            # Enriched data
+            "target_code": row['target_code'],
+            "target_name": row['target_name'],
+            "target_label": row['target_label'],
+        }
+        
+        return result
+        
+    finally:
+        conn.close()
+
+
+@app.post("/api/product/successor")
+def get_product_successor(request: dict):
+    """
+    Get successor for a complete product configuration.
+    
+    Input: { "code": "BCC-M313-GS-XYZ123", "selections": [...] }
+    
+    Checks if any node in the path has a successor.
+    Returns most critical warning.
+    
+    Phase 3: Cross-family migrations
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        product_code = request.get('code')
+        selections = request.get('selections', [])
+        
+        if not product_code and not selections:
+            raise HTTPException(status_code=400, detail="Either 'code' or 'selections' required")
+        
+        # Get all node IDs in the selection path
+        node_ids = []
+        
+        if selections:
+            for sel in selections:
+                if 'id' in sel:
+                    node_ids.append(sel['id'])
+        
+        # Also decode product code to get leaf node
+        if product_code:
+            cursor.execute("""
+                SELECT id FROM nodes 
+                WHERE full_typecode = ? OR code = ?
+            """, (product_code, product_code))
+            leaf = cursor.fetchone()
+            if leaf:
+                node_ids.append(leaf['id'])
+        
+        if not node_ids:
+            return {"has_successor": False}
+        
+        # Find successors for any node in path (prioritize by severity)
+        placeholders = ','.join('?' * len(node_ids))
+        cursor.execute(f"""
+            SELECT 
+                ps.*,
+                source.code as source_code,
+                source.label as source_label,
+                target.code as target_code,
+                target.name as target_name,
+                target.label as target_label,
+                target.full_typecode as target_typecode
+            FROM product_successors ps
+            JOIN nodes source ON ps.source_node_id = source.id
+            LEFT JOIN nodes target ON ps.target_node_id = target.id
+            WHERE ps.source_node_id IN ({placeholders})
+              AND ps.show_warning = 1
+              AND (ps.effective_date IS NULL OR ps.effective_date <= date('now'))
+            ORDER BY 
+                CASE ps.warning_severity 
+                    WHEN 'critical' THEN 1 
+                    WHEN 'warning' THEN 2 
+                    ELSE 3 
+                END,
+                ps.created_at DESC
+            LIMIT 1
+        """, node_ids)
+        
+        row = cursor.fetchone()
+        
+        if not row:
+            return {"has_successor": False}
+        
+        # Build response
+        result = {
+            "has_successor": True,
+            "id": row['id'],
+            "source_node_id": row['source_node_id'],
+            "source_code": row['source_code'],
+            "source_label": row['source_label'],
+            "source_type": row['source_type'],
+            "target_node_id": row['target_node_id'],
+            "target_full_code": row['target_full_code'] or row['target_typecode'],
+            "target_family_code": row['target_family_code'],
+            "replacement_type": row['replacement_type'],
+            "migration_note": row['migration_note'],
+            "migration_note_en": row['migration_note_en'],
+            "warning_severity": row['warning_severity'],
+            "allow_old_selection": bool(row['allow_old_selection']),
+            # Enriched data
+            "target_code": row['target_code'],
+            "target_name": row['target_name'],
+            "target_label": row['target_label'],
+        }
+        
+        return result
+        
+    finally:
+        conn.close()
+
+
+# ============================================================
+# ADMIN: Product Lifecycle Management
+# ============================================================
+
+@app.get("/api/admin/successors", dependencies=[Depends(require_admin)])
+def get_all_successors(current_user: TokenData = Depends(get_current_user)):
+    """
+    Get all successor relationships (Admin only).
+    
+    Returns list with enriched source/target information.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            SELECT 
+                ps.*,
+                source.code as source_code,
+                source.label as source_label,
+                source.full_typecode as source_typecode,
+                source.level as source_level,
+                source_family.code as source_family_code,
+                target.code as target_code,
+                target.label as target_label,
+                target.full_typecode as target_typecode,
+                target.level as target_level
+            FROM product_successors ps
+            JOIN nodes source ON ps.source_node_id = source.id
+            LEFT JOIN nodes target ON ps.target_node_id = target.id
+            -- Get source family (root ancestor at level 0)
+            -- depth = level * 2 because of pattern containers between levels
+            LEFT JOIN node_paths sc_root ON sc_root.descendant_id = source.id AND sc_root.depth = source.level * 2
+            LEFT JOIN nodes source_family ON source_family.id = sc_root.ancestor_id AND source_family.level = 0
+            ORDER BY ps.created_at DESC
+        """)
+        
+        rows = cursor.fetchall()
+        
+        results = []
+        for row in rows:
+            # Get target family code with separate query (subquery in SELECT doesn't work with LEFT JOIN)
+            target_family_code = None
+            if row['target_node_id'] and row['target_level'] is not None:
+                cursor.execute("""
+                    SELECT n.code FROM nodes n 
+                    JOIN node_paths np ON np.ancestor_id = n.id 
+                    WHERE np.descendant_id = ? 
+                      AND np.depth = ? 
+                      AND n.level = 0 
+                    LIMIT 1
+                """, (row['target_node_id'], row['target_level'] * 2))
+                family_result = cursor.fetchone()
+                if family_result:
+                    target_family_code = family_result['code']
+            
+            results.append({
+                "id": row['id'],
+                "source_node_id": row['source_node_id'],
+                "source_code": row['source_code'],
+                "source_label": row['source_label'],
+                "source_typecode": row['source_typecode'],
+                "source_level": row['source_level'],
+                "source_family_code": row['source_family_code'],
+                "source_type": row['source_type'],
+                "target_node_id": row['target_node_id'],
+                "target_code": row['target_code'],
+                "target_label": row['target_label'],
+                "target_typecode": row['target_typecode'],
+                "target_level": row['target_level'],
+                "target_full_code": row['target_full_code'],
+                "target_family_code": target_family_code,
+                "replacement_type": row['replacement_type'],
+                "migration_note": row['migration_note'],
+                "migration_note_en": row['migration_note_en'],
+                "effective_date": row['effective_date'],
+                "show_warning": bool(row['show_warning']),
+                "allow_old_selection": bool(row['allow_old_selection']),
+                "warning_severity": row['warning_severity'],
+                "created_at": row['created_at'],
+                "created_by": row['created_by'],
+            })
+        
+        return {"successors": results}
+        
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/successors", dependencies=[Depends(require_admin)])
+def create_successor(
+    request: CreateSuccessorRequest,
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Create a new successor relationship (Admin only).
+    
+    Validates:
+    - Source node exists
+    - Target node exists (if target_node_id provided)
+    - Either target_node_id OR target_full_code is set
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # Validate source node exists
+        cursor.execute("SELECT id, code, full_typecode FROM nodes WHERE id = ?", 
+                      (request.source_node_id,))
+        source = cursor.fetchone()
+        if not source:
+            raise HTTPException(status_code=404, detail="Source node not found")
+        
+        # Validate target if target_node_id provided
+        target_family_code = None
+        if request.target_node_id:
+            cursor.execute("""
+                SELECT n.id, n.code, n.full_typecode,
+                       family.code as family_code
+                FROM nodes n
+                LEFT JOIN nodes family ON (
+                    SELECT ancestor_id FROM node_paths 
+                    WHERE descendant_id = n.id AND depth = (
+                        SELECT MAX(depth) FROM node_paths WHERE descendant_id = n.id
+                    )
+                    LIMIT 1
+                ) = family.id
+                WHERE n.id = ?
+            """, (request.target_node_id,))
+            target = cursor.fetchone()
+            if not target:
+                raise HTTPException(status_code=404, detail="Target node not found")
+            target_family_code = target['family_code']
+        
+        # Validate: Either target_node_id OR target_full_code
+        if not request.target_node_id and not request.target_full_code:
+            raise HTTPException(
+                status_code=400, 
+                detail="Either target_node_id or target_full_code must be provided"
+            )
+        
+        # Insert successor
+        cursor.execute("""
+            INSERT INTO product_successors (
+                source_node_id, source_type,
+                target_node_id, target_full_code, target_family_code,
+                replacement_type, migration_note, migration_note_en,
+                effective_date, show_warning, allow_old_selection,
+                warning_severity, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            request.source_node_id, request.source_type,
+            request.target_node_id, request.target_full_code, target_family_code,
+            request.replacement_type, request.migration_note, request.migration_note_en,
+            request.effective_date, request.show_warning, request.allow_old_selection,
+            request.warning_severity, current_user.username
+        ))
+        
+        conn.commit()
+        successor_id = cursor.lastrowid
+        
+        return {
+            "message": "Successor created successfully",
+            "id": successor_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/successors/bulk", dependencies=[Depends(require_admin)])
+def create_successor_bulk(
+    request: CreateSuccessorBulkRequest,
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Create successor relationships using pre-filtered node IDs from frontend.
+    
+    Frontend sends arrays of node IDs that are already filtered based on user selections.
+    Backend creates 1:1 or 1:many mappings, or a general hint if counts don't match.
+    
+    All settings are hard-coded:
+    - replacement_type: 'successor'
+    - show_warning: True
+    - allow_old_selection: True
+    - warning_severity: 'warning'
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # 1. Fetch source nodes by IDs
+        if not request.source_node_ids:
+            raise HTTPException(status_code=400, detail="source_node_ids cannot be empty")
+        
+        placeholders = ','.join('?' * len(request.source_node_ids))
+        cursor.execute(f"""
+            SELECT id, code, full_typecode, is_intermediate_code
+            FROM nodes
+            WHERE id IN ({placeholders})
+            ORDER BY id
+        """, request.source_node_ids)
+        
+        source_nodes = cursor.fetchall()
+        
+        if not source_nodes:
+            raise HTTPException(status_code=404, detail="No source nodes found with provided IDs")
+        
+        if len(source_nodes) != len(request.source_node_ids):
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Some source node IDs not found ({len(source_nodes)} found, {len(request.source_node_ids)} requested)"
+            )
+        
+        # 2. Fetch target nodes by IDs
+        if not request.target_node_ids:
+            raise HTTPException(status_code=400, detail="target_node_ids cannot be empty")
+        
+        placeholders = ','.join('?' * len(request.target_node_ids))
+        cursor.execute(f"""
+            SELECT id, code, full_typecode, is_intermediate_code
+            FROM nodes
+            WHERE id IN ({placeholders})
+            ORDER BY id
+        """, request.target_node_ids)
+        
+        target_nodes = cursor.fetchall()
+        
+        if not target_nodes:
+            raise HTTPException(status_code=404, detail="No target nodes found with provided IDs")
+        
+        if len(target_nodes) != len(request.target_node_ids):
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Some target node IDs not found ({len(target_nodes)} found, {len(request.target_node_ids)} requested)"
+            )
+        
+        # 3. Automatic mode detection: Links vs Hint
+        source_all_complete = all(node['full_typecode'] for node in source_nodes)
+        target_all_complete = all(node['full_typecode'] for node in target_nodes)
+        
+        # Determine mode
+        if (source_all_complete and target_all_complete and 
+            len(source_nodes) == len(target_nodes)):
+            # MODE 1: Create individual 1:1 links (bulk)
+            created_successors = []
+            skipped_duplicates = 0
+            
+            for source_node, target_node in zip(source_nodes, target_nodes):
+                # Check if this link already exists
+                cursor.execute("""
+                    SELECT id FROM product_successors
+                    WHERE source_node_id = ? AND target_node_id = ?
+                """, (source_node['id'], target_node['id']))
+                
+                if cursor.fetchone():
+                    # Skip duplicate
+                    skipped_duplicates += 1
+                    continue
+                
+                # Automatically determine source_type
+                if source_node['full_typecode'] and source_node['is_intermediate_code']:
+                    source_type = 'intermediate'
+                elif source_node['full_typecode']:
+                    source_type = 'leaf'
+                else:
+                    source_type = 'node'
+                
+                # Insert successor with hard-coded settings
+                cursor.execute("""
+                    INSERT INTO product_successors (
+                        source_node_id, source_type,
+                        target_node_id, target_full_code, target_family_code,
+                        replacement_type, migration_note, migration_note_en,
+                        effective_date, show_warning, allow_old_selection,
+                        warning_severity, created_by
+                    ) VALUES (?, ?, ?, NULL, NULL, 'successor', ?, NULL, NULL, 1, 1, 'warning', ?)
+                """, (
+                    source_node['id'],
+                    source_type,
+                    target_node['id'],
+                    request.migration_note,
+                    current_user.username
+                ))
+                
+                created_successors.append({
+                    "source_node_id": source_node['id'],
+                    "source_code": source_node['code'],
+                    "target_node_id": target_node['id'],
+                    "target_code": target_node['code'],
+                })
+            
+            conn.commit()
+            
+            return {
+                "type": "links",
+                "message": f"Successfully created {len(created_successors)} successor links" + 
+                          (f", skipped {skipped_duplicates} duplicates" if skipped_duplicates > 0 else ""),
+                "created_count": len(created_successors),
+                "skipped_count": skipped_duplicates,
+                "successors": created_successors
+            }
+        else:
+            # MODE 2: Create hints for ALL source nodes to ALL target nodes
+            # This covers cases like: BCC Level 2 "020" (multiple nodes) → BCC Level 2 "007" (multiple nodes)
+            # Each "020" node gets a hint to each "007" node
+            
+            created_hints = []
+            updated_hints = 0
+            skipped_duplicates = 0
+            
+            # Create migration note with count info
+            auto_note = f"Allgemeine Referenz: {len(source_nodes)} Source-Node(s) → {len(target_nodes)} Target-Node(s)"
+            final_note = f"{request.migration_note}. {auto_note}" if request.migration_note else auto_note
+            
+            # For each source node, create hints to ALL target nodes
+            for source_node in source_nodes:
+                for target_node in target_nodes:
+                    # Check if a hint already exists for this combination
+                    cursor.execute("""
+                        SELECT id FROM product_successors
+                        WHERE source_node_id = ? AND target_node_id = ?
+                    """, (source_node['id'], target_node['id']))
+                    
+                    existing = cursor.fetchone()
+                    
+                    if existing:
+                        # Skip or update existing hint
+                        skipped_duplicates += 1
+                        continue
+                    
+                    # Determine source_type for the hint
+                    if source_node['full_typecode'] and source_node['is_intermediate_code']:
+                        source_type = 'intermediate'
+                    elif source_node['full_typecode']:
+                        source_type = 'leaf'
+                    else:
+                        source_type = 'node'  # General node-level hint (use 'node' instead of 'reference')
+                    
+                    # Insert hint entry
+                    cursor.execute("""
+                        INSERT INTO product_successors (
+                            source_node_id, source_type,
+                            target_node_id, target_full_code, target_family_code,
+                            replacement_type, migration_note, migration_note_en,
+                            effective_date, show_warning, allow_old_selection,
+                            warning_severity, created_by
+                        ) VALUES (?, ?, ?, NULL, NULL, 'successor', ?, NULL, NULL, 1, 1, 'info', ?)
+                    """, (
+                        source_node['id'],
+                        source_type,
+                        target_node['id'],
+                        final_note,
+                        current_user.username
+                    ))
+                    
+                    created_hints.append({
+                        "source_node_id": source_node['id'],
+                        "source_code": source_node['code'],
+                        "target_node_id": target_node['id'],
+                        "target_code": target_node['code'],
+                    })
+            
+            conn.commit()
+            
+            return {
+                "type": "hint",
+                "message": f"Created {len(created_hints)} reference hints ({len(source_nodes)} source × {len(target_nodes)} target nodes)" + 
+                          (f", skipped {skipped_duplicates} duplicates" if skipped_duplicates > 0 else ""),
+                "created_count": len(created_hints),
+                "skipped_count": skipped_duplicates,
+                "source_count": len(source_nodes),
+                "target_count": len(target_nodes),
+                "successors": created_hints[:10]  # Return max 10 for response size
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.put("/api/admin/successors/{successor_id}", dependencies=[Depends(require_admin)])
+def update_successor(
+    successor_id: int,
+    request: UpdateSuccessorRequest,
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Update an existing successor relationship (Admin only).
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # Check if exists
+        cursor.execute("SELECT id FROM product_successors WHERE id = ?", (successor_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Successor not found")
+        
+        # Build update query dynamically
+        updates = []
+        params = []
+        
+        if request.replacement_type is not None:
+            updates.append("replacement_type = ?")
+            params.append(request.replacement_type)
+        if request.migration_note is not None:
+            updates.append("migration_note = ?")
+            params.append(request.migration_note)
+        if request.migration_note_en is not None:
+            updates.append("migration_note_en = ?")
+            params.append(request.migration_note_en)
+        if request.effective_date is not None:
+            updates.append("effective_date = ?")
+            params.append(request.effective_date)
+        if request.show_warning is not None:
+            updates.append("show_warning = ?")
+            params.append(request.show_warning)
+        if request.allow_old_selection is not None:
+            updates.append("allow_old_selection = ?")
+            params.append(request.allow_old_selection)
+        if request.warning_severity is not None:
+            updates.append("warning_severity = ?")
+            params.append(request.warning_severity)
+        
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+        
+        params.append(successor_id)
+        query = f"UPDATE product_successors SET {', '.join(updates)} WHERE id = ?"
+        
+        cursor.execute(query, params)
+        conn.commit()
+        
+        return {"message": "Successor updated successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.delete("/api/admin/successors/{successor_id}", dependencies=[Depends(require_admin)])
+def delete_successor(
+    successor_id: int,
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Delete a successor relationship (Admin only).
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("SELECT id FROM product_successors WHERE id = ?", (successor_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Successor not found")
+        
+        cursor.execute("DELETE FROM product_successors WHERE id = ?", (successor_id,))
+        conn.commit()
+        
+        return {"message": "Successor deleted successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+# ============================================================
 # Root Endpoint
 # ============================================================
 @app.get("/")
@@ -4441,6 +6692,825 @@ def root():
             "✅ Bild-Upload für Node Labels"
         ]
     }
+
+
+# ============================================================
+# Admin: Segment Name Editing
+# ============================================================
+
+class SegmentNameUpdateRequest(BaseModel):
+    """Request to update segment name for all nodes on a level within a group"""
+    family_code: str
+    group_name: str
+    level: int
+    new_name: str
+    pattern_string: Optional[str] = None  # e.g., "3-5-4-2-6" - only edit nodes matching this schema
+
+class SegmentNamePreviewResponse(BaseModel):
+    """Preview of nodes that will be affected by the update"""
+    affected_node_ids: List[int]
+    affected_count: int
+    sample_nodes: List[dict]  # First 10 nodes as examples
+
+def _compute_pattern_string(full_typecode: str) -> str:
+    """
+    Compute pattern string from full typecode.
+    
+    Example: "BCC M313-0000-20" -> "3-4-4-2"
+    """
+    if not full_typecode:
+        return ""
+    
+    # Split by both '-' and ' '
+    parts = full_typecode.split('-')
+    segments = []
+    for part in parts:
+        if ' ' in part:
+            segments.extend([s.strip() for s in part.split() if s.strip()])
+        else:
+            segments.append(part.strip())
+    
+    # Create pattern from lengths
+    pattern = [str(len(s)) for s in segments if s]
+    return '-'.join(pattern)
+
+
+@app.post("/api/admin/segment-name-preview", dependencies=[Depends(require_admin)])
+def preview_segment_name_update(
+    request: SegmentNameUpdateRequest,
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Preview which nodes will be affected by a segment name update.
+    
+    Finds all nodes on the specified level with the specified code
+    that have descendants leading to the specified group_name.
+    
+    If pattern_string is provided, only nodes with descendants matching
+    that specific schema pattern will be affected.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # Get family ID
+        cursor.execute("SELECT id FROM nodes WHERE code = ? AND level = 0", (request.family_code,))
+        family = cursor.fetchone()
+        if not family:
+            raise HTTPException(status_code=404, detail=f"Familie '{request.family_code}' nicht gefunden")
+        
+        family_id = family['id']
+        
+        # Find all nodes that match the criteria
+        cursor.execute("""
+            SELECT DISTINCT n.id, n.code, n.name, n.level, n.full_typecode
+            FROM nodes n
+            JOIN node_paths p ON p.ancestor_id = n.id
+            JOIN nodes descendants ON p.descendant_id = descendants.id
+            WHERE n.level = ?
+              AND descendants.group_name = ?
+              AND descendants.full_typecode IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM node_paths family_path
+                  WHERE family_path.ancestor_id = ?
+                    AND family_path.descendant_id = n.id
+              )
+            ORDER BY n.id
+        """, (request.level, request.group_name, family_id))
+        
+        affected_nodes = cursor.fetchall()
+        
+        # Filter by pattern_string if provided
+        if request.pattern_string:
+            filtered_nodes = []
+            for node in affected_nodes:
+                # Check if any descendant with full_typecode matches the pattern
+                cursor.execute("""
+                    SELECT descendants.full_typecode
+                    FROM node_paths p
+                    JOIN nodes descendants ON p.descendant_id = descendants.id
+                    WHERE p.ancestor_id = ?
+                      AND descendants.group_name = ?
+                      AND descendants.full_typecode IS NOT NULL
+                    LIMIT 1
+                """, (node['id'], request.group_name))
+                
+                descendant = cursor.fetchone()
+                if descendant and descendant['full_typecode']:
+                    computed_pattern = _compute_pattern_string(descendant['full_typecode'])
+                    if computed_pattern == request.pattern_string:
+                        filtered_nodes.append(node)
+            
+            affected_nodes = filtered_nodes
+        
+        # Prepare sample nodes (first 10)
+        sample_nodes = []
+        for row in affected_nodes[:10]:
+            sample_nodes.append({
+                'id': row['id'],
+                'code': row['code'],
+                'current_name': row['name'],
+                'level': row['level'],
+                'example_typecode': row['full_typecode']
+            })
+        
+        return SegmentNamePreviewResponse(
+            affected_node_ids=[row['id'] for row in affected_nodes],
+            affected_count=len(affected_nodes),
+            sample_nodes=sample_nodes
+        )
+    
+    finally:
+        conn.close()
+
+
+@app.put("/api/admin/segment-name", dependencies=[Depends(require_admin)])
+def update_segment_name(
+    request: SegmentNameUpdateRequest,
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Update the name attribute for all nodes matching the criteria.
+    
+    Updates all nodes on the specified level with the specified code
+    that have descendants leading to the specified group_name.
+    
+    If pattern_string is provided, only nodes with descendants matching
+    that specific schema pattern will be affected.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # Get family ID
+        cursor.execute("SELECT id FROM nodes WHERE code = ? AND level = 0", (request.family_code,))
+        family = cursor.fetchone()
+        if not family:
+            raise HTTPException(status_code=404, detail=f"Familie '{request.family_code}' nicht gefunden")
+        
+        family_id = family['id']
+        
+        # Find affected node IDs
+        cursor.execute("""
+            SELECT DISTINCT n.id
+            FROM nodes n
+            JOIN node_paths p ON p.ancestor_id = n.id
+            JOIN nodes descendants ON p.descendant_id = descendants.id
+            WHERE n.level = ?
+              AND descendants.group_name = ?
+              AND descendants.full_typecode IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM node_paths family_path
+                  WHERE family_path.ancestor_id = ?
+                    AND family_path.descendant_id = n.id
+              )
+        """, (request.level, request.group_name, family_id))
+        
+        affected_nodes = cursor.fetchall()
+        
+        # Filter by pattern_string if provided
+        if request.pattern_string:
+            filtered_node_ids = []
+            for node in affected_nodes:
+                # Check if any descendant with full_typecode matches the pattern
+                cursor.execute("""
+                    SELECT descendants.full_typecode
+                    FROM node_paths p
+                    JOIN nodes descendants ON p.descendant_id = descendants.id
+                    WHERE p.ancestor_id = ?
+                      AND descendants.group_name = ?
+                      AND descendants.full_typecode IS NOT NULL
+                    LIMIT 1
+                """, (node['id'], request.group_name))
+                
+                descendant = cursor.fetchone()
+                if descendant and descendant['full_typecode']:
+                    computed_pattern = _compute_pattern_string(descendant['full_typecode'])
+                    if computed_pattern == request.pattern_string:
+                        filtered_node_ids.append(node['id'])
+            
+            affected_node_ids = filtered_node_ids
+        else:
+            affected_node_ids = [row['id'] for row in affected_nodes]
+        
+        if not affected_node_ids:
+            return {
+                "success": True,
+                "message": "Keine Nodes gefunden die geändert werden müssen",
+                "updated_count": 0
+            }
+        
+        # Perform update
+        placeholders = ','.join('?' * len(affected_node_ids))
+        cursor.execute(f"""
+            UPDATE nodes
+            SET name = ?
+            WHERE id IN ({placeholders})
+        """, [request.new_name] + affected_node_ids)
+        
+        updated_count = cursor.rowcount
+        conn.commit()
+        
+        return {
+            "success": True,
+            "message": f"Erfolgreich {updated_count} Node(s) aktualisiert",
+            "updated_count": updated_count,
+            "updated_node_ids": affected_node_ids
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+# ============================================================
+# Admin: Sub-Segment Definitions (Character-Level Editing)
+# ============================================================
+
+class SubSegmentDefinition(BaseModel):
+    """Definition of a character range within a code segment"""
+    start: int  # Start position (0-based)
+    end: int    # End position (exclusive)
+    name: str   # Name for this character range
+
+class CreateSubSegmentRequest(BaseModel):
+    """Request to create/update sub-segment definitions"""
+    family_code: str
+    group_name: str
+    level: int
+    pattern_string: Optional[str] = None  # Optional: Only for specific schema pattern
+    subsegments: List[SubSegmentDefinition]
+
+class SubSegmentResponse(BaseModel):
+    """Response containing sub-segment definitions"""
+    id: int
+    family_code: str
+    group_name: str
+    level: int
+    pattern_string: Optional[str]
+    subsegments: List[SubSegmentDefinition]
+    created_by: Optional[int]
+    created_at: str
+    updated_at: str
+
+
+@app.get("/api/subsegments/{family_code}/{group_name}/{level}")
+def get_subsegments(
+    family_code: str,
+    group_name: str,
+    level: int,
+    pattern_string: Optional[str] = None
+):
+    """
+    Get sub-segment definitions for a specific level within a group.
+    
+    If pattern_string is provided, returns definitions specific to that pattern.
+    If not provided, returns definitions applicable to all patterns (pattern_string=NULL).
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # Query for subsegments
+        if pattern_string:
+            cursor.execute("""
+                SELECT id, family_code, group_name, level, pattern_string, subsegments,
+                       created_by, created_at, updated_at
+                FROM segment_subsegments
+                WHERE family_code = ? AND group_name = ? AND level = ?
+                  AND (pattern_string = ? OR pattern_string IS NULL)
+                ORDER BY pattern_string NULLS LAST
+            """, (family_code, group_name, level, pattern_string))
+        else:
+            cursor.execute("""
+                SELECT id, family_code, group_name, level, pattern_string, subsegments,
+                       created_by, created_at, updated_at
+                FROM segment_subsegments
+                WHERE family_code = ? AND group_name = ? AND level = ?
+                  AND pattern_string IS NULL
+            """, (family_code, group_name, level))
+        
+        rows = cursor.fetchall()
+        
+        if not rows:
+            return []
+        
+        # Parse JSON subsegments
+        results = []
+        for row in rows:
+            subsegments_data = json.loads(row['subsegments'])
+            subsegments = [SubSegmentDefinition(**sub) for sub in subsegments_data]
+            
+            results.append(SubSegmentResponse(
+                id=row['id'],
+                family_code=row['family_code'],
+                group_name=row['group_name'],
+                level=row['level'],
+                pattern_string=row['pattern_string'],
+                subsegments=subsegments,
+                created_by=row['created_by'],
+                created_at=row['created_at'],
+                updated_at=row['updated_at']
+            ))
+        
+        return results
+    
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/subsegments", dependencies=[Depends(require_admin)])
+def create_or_update_subsegments(
+    request: CreateSubSegmentRequest,
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Create or update sub-segment definitions for a level within a group.
+    
+    If a definition already exists for this combination, it will be updated.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # Validate subsegments
+        if not request.subsegments:
+            raise HTTPException(status_code=400, detail="Mindestens ein Sub-Segment erforderlich")
+        
+        # Check for overlapping ranges
+        for i, sub1 in enumerate(request.subsegments):
+            if sub1.start >= sub1.end:
+                raise HTTPException(status_code=400, detail=f"Sub-Segment {i}: Start muss kleiner als End sein")
+            
+            for j, sub2 in enumerate(request.subsegments):
+                if i < j:  # Only check each pair once
+                    # Check for overlap
+                    if not (sub1.end <= sub2.start or sub2.end <= sub1.start):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Sub-Segmente {i} und {j} überlappen sich"
+                        )
+        
+        # Convert subsegments to JSON
+        subsegments_json = json.dumps([sub.dict() for sub in request.subsegments])
+        
+        # Check if entry exists
+        cursor.execute("""
+            SELECT id FROM segment_subsegments
+            WHERE family_code = ? AND group_name = ? AND level = ?
+              AND (pattern_string = ? OR (pattern_string IS NULL AND ? IS NULL))
+        """, (request.family_code, request.group_name, request.level,
+              request.pattern_string, request.pattern_string))
+        
+        existing = cursor.fetchone()
+        
+        if existing:
+            # Update existing
+            cursor.execute("""
+                UPDATE segment_subsegments
+                SET subsegments = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (subsegments_json, existing['id']))
+            
+            message = f"Sub-Segment-Definition aktualisiert (ID {existing['id']})"
+            subseg_id = existing['id']
+        else:
+            # Insert new
+            cursor.execute("""
+                INSERT INTO segment_subsegments
+                (family_code, group_name, level, pattern_string, subsegments, created_by)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (request.family_code, request.group_name, request.level,
+                  request.pattern_string, subsegments_json, current_user.user_id))
+            
+            subseg_id = cursor.lastrowid
+            message = f"Sub-Segment-Definition erstellt (ID {subseg_id})"
+        
+        conn.commit()
+        
+        return {
+            "success": True,
+            "message": message,
+            "id": subseg_id
+        }
+    
+    finally:
+        conn.close()
+
+
+@app.delete("/api/admin/subsegments/{subsegment_id}", dependencies=[Depends(require_admin)])
+def delete_subsegments(
+    subsegment_id: int,
+    current_user: TokenData = Depends(get_current_user)
+):
+    """
+    Delete a sub-segment definition.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # Check if exists
+        cursor.execute("SELECT id FROM segment_subsegments WHERE id = ?", (subsegment_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Sub-Segment-Definition nicht gefunden")
+        
+        # Delete
+        cursor.execute("DELETE FROM segment_subsegments WHERE id = ?", (subsegment_id,))
+        conn.commit()
+        
+        return {
+            "success": True,
+            "message": f"Sub-Segment-Definition {subsegment_id} gelöscht"
+        }
+    
+    finally:
+        conn.close()
+
+
+# ============================================================
+# Schema Visualization - Typecode Pattern Analysis
+# ============================================================
+
+class SchemaPattern(BaseModel):
+    """Ein einzigartiges Schema-Muster"""
+    pattern: List[int]  # z.B. [3, 5, 3] für BTL5-H1104-M9999
+    pattern_string: str  # z.B. "3-5-3"
+    example_code: str  # Beispiel Typcode mit diesem Muster
+    segment_names: List[Optional[str]]  # Namen der Segmente (wenn vorhanden)
+    segment_examples: List[str]  # Beispielwerte für jedes Segment
+    segment_subsegments: List[Optional[List[SubSegmentDefinition]]]  # Sub-Segmente pro Level
+    count: int  # Wie oft dieses Muster vorkommt
+
+class GroupSchema(BaseModel):
+    """Schema-Muster für eine group_name"""
+    group_name: str
+    patterns: List[SchemaPattern]
+
+class FamilySchemaVisualization(BaseModel):
+    """Gesamte Schema-Visualisierung für eine Produktfamilie"""
+    family_code: str
+    family_label: Optional[str]
+    has_group_names: bool
+    groups: List[GroupSchema]  # Entweder nach group_name gruppiert oder alle zusammen
+
+@app.get("/api/family-schema-visualization/{family_code}", response_model=FamilySchemaVisualization)
+def get_family_schema_visualization(family_code: str):
+    """
+    Analysiert und visualisiert alle Typcode-Schema-Muster einer Produktfamilie.
+    
+    Logik:
+    - Wenn Produktfamilie group_names hat:
+      - Zeige Schemas pro group_name
+      - Ignoriere Typecodes ohne group_name
+    - Wenn Produktfamilie KEINE group_names hat UND max 5 einzigartige Schemas:
+      - Zeige alle Schemas der gesamten Familie
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # Familie finden
+        cursor.execute("""
+            SELECT id, code, label, label_en
+            FROM nodes
+            WHERE code = ? AND level = 0
+        """, (family_code,))
+        
+        family = cursor.fetchone()
+        if not family:
+            raise HTTPException(status_code=404, detail=f"Familie '{family_code}' nicht gefunden")
+        
+        family_id = family['id']
+        code = family['code']
+        label = family['label']
+        label_en = family['label_en']
+        
+        # Prüfe ob diese Familie group_names hat (alle Descendants dieser Familie)
+        cursor.execute("""
+            SELECT COUNT(DISTINCT n.group_name)
+            FROM nodes n
+            JOIN node_paths p ON p.descendant_id = n.id
+            WHERE p.ancestor_id = ? AND n.group_name IS NOT NULL
+        """, (family_id,))
+        
+        has_group_names = cursor.fetchone()[0] > 0
+        
+        groups = []
+        
+        if has_group_names:
+            # Fall 1: Familie hat group_names - gruppiere nach group_name
+            cursor.execute("""
+                SELECT DISTINCT n.group_name
+                FROM nodes n
+                JOIN node_paths p ON p.descendant_id = n.id
+                WHERE p.ancestor_id = ? AND n.group_name IS NOT NULL
+                ORDER BY n.group_name
+            """, (family_id,))
+            
+            group_names = [row[0] for row in cursor.fetchall()]
+            
+            for group_name in group_names:
+                patterns = _analyze_schemas_for_group(cursor, family_id, code, group_name)
+                if patterns:  # Nur hinzufügen wenn Patterns gefunden
+                    groups.append(GroupSchema(
+                        group_name=group_name,
+                        patterns=patterns
+                    ))
+        
+        else:
+            # Fall 2: Familie hat KEINE group_names
+            # Analysiere alle Schemas der Familie
+            all_patterns = _analyze_schemas_for_family(cursor, family_id, code)
+            
+            # Nur anzeigen wenn max 5 einzigartige Schemas
+            if len(all_patterns) <= 5:
+                groups.append(GroupSchema(
+                    group_name=f"Alle Typecodes ({family_code})",
+                    patterns=all_patterns
+                ))
+        
+        return FamilySchemaVisualization(
+            family_code=code,
+            family_label=label,
+            has_group_names=has_group_names,
+            groups=groups
+        )
+    
+    finally:
+        conn.close()
+
+
+def _analyze_schemas_for_group(cursor, family_id: int, family_code: str, group_name: str) -> List[SchemaPattern]:
+    """Analysiert Schema-Muster für eine bestimmte group_name"""
+    
+    # Hole alle Nodes mit full_typecode dieser group_name (nicht nur Leaves!)
+    cursor.execute("""
+        SELECT n.id, n.code, n.full_typecode, n.name
+        FROM nodes n
+        JOIN node_paths p ON p.descendant_id = n.id
+        WHERE p.ancestor_id = ?
+          AND n.group_name = ?
+          AND n.full_typecode IS NOT NULL
+    """, (family_id, group_name))
+    
+    nodes = cursor.fetchall()
+    
+    return _extract_patterns_from_nodes(cursor, family_id, nodes, family_code, group_name)
+
+
+def _analyze_schemas_for_family(cursor, family_id: int, family_code: str) -> List[SchemaPattern]:
+    """Analysiert Schema-Muster für die gesamte Familie (ohne group_name Filter)"""
+    
+    # Hole alle Nodes mit full_typecode der Familie (nicht nur Leaves!)
+    cursor.execute("""
+        SELECT n.id, n.code, n.full_typecode, n.name
+        FROM nodes n
+        JOIN node_paths p ON p.descendant_id = n.id
+        WHERE p.ancestor_id = ?
+          AND n.full_typecode IS NOT NULL
+    """, (family_id,))
+    
+    nodes = cursor.fetchall()
+    
+    return _extract_patterns_from_nodes(cursor, family_id, nodes, family_code)
+
+
+def _extract_patterns_from_nodes(cursor, family_id: int, nodes, family_code: str, group_name: Optional[str] = None) -> List[SchemaPattern]:
+    """Extrahiert einzigartige Schema-Muster aus einer Liste von Nodes"""
+    
+    # Sammle Muster
+    pattern_examples = {}  # pattern_string -> (example_code, segments, node_id)
+    pattern_counts = {}  # pattern_string -> count
+    
+    for node_id, code, full_typecode, name in nodes:
+        if not full_typecode:
+            continue
+        
+        # Parse Typcode in Segmente (durch '-' UND Leerzeichen getrennt)
+        # Zuerst nach '-' splitten
+        parts = full_typecode.split('-')
+        # Dann jedes Teil nochmal nach Leerzeichen splitten und flach machen
+        segments = []
+        for part in parts:
+            part = part.strip()
+            if ' ' in part:
+                # Wenn Leerzeichen enthalten, weiter splitten
+                segments.extend([s.strip() for s in part.split() if s.strip()])
+            else:
+                segments.append(part)
+        
+        # Erstelle Pattern (Längen der Segmente)
+        pattern = [len(seg) for seg in segments]
+        pattern_string = '-'.join(map(str, pattern))
+        
+        # Zähle und speichere Beispiel
+        pattern_counts[pattern_string] = pattern_counts.get(pattern_string, 0) + 1
+        
+        if pattern_string not in pattern_examples:
+            pattern_examples[pattern_string] = (full_typecode, segments, node_id)
+    
+    # Erstelle SchemaPattern Objekte
+    result = []
+    for pattern_string in sorted(pattern_examples.keys()):
+        example_code, segments, node_id = pattern_examples[pattern_string]
+        pattern = [int(x) for x in pattern_string.split('-')]
+        
+        # Hole Segment-Namen für diesen Typcode
+        segment_names = _get_segment_names(cursor, family_id, node_id, len(segments))
+        
+        # Hole Sub-Segmente für jedes Level
+        segment_subsegments = []
+        for level in range(len(segments)):
+            # Query sub-segments for this level
+            subseg_list = _get_subsegments_for_level(
+                cursor, family_code, group_name or "", level, pattern_string
+            )
+            segment_subsegments.append(subseg_list if subseg_list else None)
+        
+        result.append(SchemaPattern(
+            pattern=pattern,
+            pattern_string=pattern_string,
+            example_code=example_code,
+            segment_names=segment_names,
+            segment_examples=segments,
+            segment_subsegments=segment_subsegments,
+            count=pattern_counts[pattern_string]
+        ))
+    
+    return result
+
+
+def _get_subsegments_for_level(cursor, family_code: str, group_name: str, level: int, pattern_string: str) -> Optional[List[SubSegmentDefinition]]:
+    """Holt Sub-Segment-Definitionen für ein bestimmtes Level"""
+    cursor.execute("""
+        SELECT subsegments
+        FROM segment_subsegments
+        WHERE family_code = ? AND group_name = ? AND level = ?
+          AND (pattern_string = ? OR pattern_string IS NULL)
+        ORDER BY pattern_string NULLS LAST
+        LIMIT 1
+    """, (family_code, group_name, level, pattern_string))
+    
+    row = cursor.fetchone()
+    if row and row['subsegments']:
+        try:
+            subsegments_data = json.loads(row['subsegments'])
+            return [SubSegmentDefinition(**sub) for sub in subsegments_data]
+        except:
+            return None
+    return None
+
+
+def _get_segment_names(cursor, family_id: int, node_id: int, num_segments: int) -> List[Optional[str]]:
+    """
+    Holt die Namen der Code-Segmente für einen bestimmten Node.
+    Folgt dem Pfad von Familie bis zum Node und sammelt die Namen.
+    Jedes Segment entspricht einem Level (0 = Familie, 1 = erster Code, etc.)
+    """
+    
+    # Hole den vollständigen Pfad zu diesem Node, sortiert nach Level
+    cursor.execute("""
+        SELECT n.level, n.name, n.code
+        FROM node_paths p
+        JOIN nodes n ON p.ancestor_id = n.id
+        WHERE p.descendant_id = ?
+        ORDER BY n.level ASC
+    """, (node_id,))
+    
+    path_nodes = cursor.fetchall()
+    
+    # Erstelle Dict: level -> name
+    level_names = {}
+    for row in path_nodes:
+        level = row[0]
+        name = row[1]
+        level_names[level] = name if name else None
+    
+    # Baue Liste der Namen für jedes Segment
+    # Segment 0 = Familie (Level 0), Segment 1 = Level 1, etc.
+    names = []
+    for i in range(num_segments):
+        names.append(level_names.get(i, None))
+    
+    return names
+
+
+def _sync_node_labels(cursor, node_id: int, label_de: Optional[str], label_en: Optional[str]):
+    """
+    Synchronisiert node_labels Tabelle basierend auf label/label_en Strings.
+    
+    Verwendet den label_parser für vollständiges Parsing inkl. code_segment und Positionen.
+    
+    Format der Labels (im nodes.label/label_en):
+      "Titel: CODE = Beschreibung"  → parst CODE als code_segment
+      "Titel: Beschreibung"         → kein code_segment
+    
+    Alle Spalten werden korrekt gesetzt:
+      - node_id
+      - title
+      - code_segment (falls im Format "CODE = Text")
+      - position_start/position_end (Position im Node-Code)
+      - label_de/label_en
+      - display_order
+    """
+    from label_parser import parse_structured_label
+    
+    # 1. Lösche alte node_labels für diesen Node
+    cursor.execute("DELETE FROM node_labels WHERE node_id = ?", (node_id,))
+    
+    # 2. Parse und erstelle neue node_labels
+    if not label_de and not label_en:
+        return  # Keine Labels vorhanden
+    
+    # Hole Node-Code für Positions-Berechnung
+    node_code = cursor.execute(
+        "SELECT code FROM nodes WHERE id = ?",
+        (node_id,)
+    ).fetchone()
+    full_code = node_code['code'] if node_code else None
+    
+    # Parse beide Labels mit dem label_parser Modul
+    de_parsed = parse_structured_label(label_de, full_code) if label_de else []
+    en_parsed = parse_structured_label(label_en, full_code) if label_en else []
+    
+    # Merge DE und EN Labels by matching code_segment + position
+    # DE ist führend, EN wird hinzugefügt wenn passender Eintrag existiert
+    merged = {}  # key: (code_segment, position_start, position_end, title) -> data
+    
+    for entry in de_parsed:
+        key = (
+            entry.get('code_segment'),
+            entry.get('position_start'),
+            entry.get('position_end'),
+            entry.get('title')
+        )
+        merged[key] = {
+            'title': entry.get('title'),
+            'code_segment': entry.get('code_segment'),
+            'position_start': entry.get('position_start'),
+            'position_end': entry.get('position_end'),
+            'label_de': entry.get('label'),
+            'label_en': None,
+            'display_order': entry.get('display_order', 0)
+        }
+    
+    # Merge EN entries
+    for entry in en_parsed:
+        key = (
+            entry.get('code_segment'),
+            entry.get('position_start'),
+            entry.get('position_end'),
+            entry.get('title')
+        )
+        if key in merged:
+            # Matching entry found - add EN label
+            merged[key]['label_en'] = entry.get('label')
+        else:
+            # No matching DE entry - create new EN-only entry
+            merged[key] = {
+                'title': entry.get('title'),
+                'code_segment': entry.get('code_segment'),
+                'position_start': entry.get('position_start'),
+                'position_end': entry.get('position_end'),
+                'label_de': None,
+                'label_en': entry.get('label'),
+                'display_order': entry.get('display_order', 0)
+            }
+    
+    # Insert all merged entries
+    for data in sorted(merged.values(), key=lambda x: x['display_order']):
+        cursor.execute("""
+            INSERT INTO node_labels 
+            (node_id, title, code_segment, position_start, position_end, 
+             label_de, label_en, display_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            node_id,
+            data['title'],
+            data['code_segment'],
+            data['position_start'],
+            data['position_end'],
+            data['label_de'],
+            data['label_en'],
+            data['display_order']
+        ))
+
+
+# ============================================================
+# Excel Export for Family Schema
+# ============================================================
+
+# ============================================================
+# Excel Export - Komplett neu implementiert
+# Basierend auf EXCEL_EXPORT_README.md
+# ============================================================
+
 
 
 # ============================================================
